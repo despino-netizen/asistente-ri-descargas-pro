@@ -59,9 +59,11 @@ CONFIG_FILE = os.path.join(APP_DATA_DIR, "config_descargas.json")
 LOG_FILE = os.path.join(APP_DATA_DIR, "historial_actividad.txt")
 DEFAULT_DOWNLOAD_DIR = _get_default_download_dir()
 APP_NAME = "Asistente RI Descargas Pro"
-APP_VERSION = "3.3.4"
+APP_VERSION = "3.3.5"
 APP_VERSION_LABEL = f"V{APP_VERSION}"
 DEFAULT_EXE_NAME = "AsistenteRIDescargasPro.exe"
+DEFAULT_PORTABLE_DIR_NAME = "AsistenteRIDescargasPro"
+DEFAULT_PORTABLE_ZIP_PREFIX = "AsistenteRIDescargasPro_portable_v"
 DEFAULT_INSTALLER_PREFIX = "Instalar_AsistenteRIDescargasPro_v"
 GITHUB_RELEASE_REPOSITORY = "despino-netizen/asistente-ri-descargas-pro"
 GITHUB_RELEASE_ASSET_NAME = DEFAULT_EXE_NAME
@@ -1143,9 +1145,13 @@ class GobiernoPDFDownloader(ctk.CTk):
         normalized = self._normalize_version_tag(version_text or APP_VERSION)
         return f"{DEFAULT_INSTALLER_PREFIX}{normalized}.exe"
 
+    def _expected_portable_zip_asset_name(self, version_text=""):
+        normalized = self._normalize_version_tag(version_text or APP_VERSION)
+        return f"{DEFAULT_PORTABLE_ZIP_PREFIX}{normalized}.zip"
+
     def _expected_update_asset_name(self, version_text=""):
         if self._is_running_from_installed_location():
-            return self._expected_installer_asset_name(version_text)
+            return self._expected_portable_zip_asset_name(version_text)
         return self._expected_direct_update_asset_name()
 
     def _configured_github_repo(self):
@@ -1160,6 +1166,10 @@ class GobiernoPDFDownloader(ctk.CTk):
     def _is_installer_asset_name(self, asset_name):
         normalized = str(asset_name or "").strip().lower()
         return normalized.startswith(DEFAULT_INSTALLER_PREFIX.lower()) and normalized.endswith(".exe")
+
+    def _is_portable_zip_asset_name(self, asset_name):
+        normalized = str(asset_name or "").strip().lower()
+        return normalized.startswith(DEFAULT_PORTABLE_ZIP_PREFIX.lower()) and normalized.endswith(".zip")
 
     def _update_staging_dir(self):
         staging_dir = os.path.join(APP_DATA_DIR, "updates")
@@ -1189,12 +1199,24 @@ class GobiernoPDFDownloader(ctk.CTk):
             GITHUB_RELEASE_ASSET_NAME,
             DEFAULT_EXE_NAME,
         ]
+        portable_preferred_names = [
+            self._expected_portable_zip_asset_name(latest_version),
+        ]
         installer_preferred_names = [
             self._expected_installer_asset_name(latest_version),
             str(self.saved_config.get("github_asset_name", "") or "").strip(),
         ]
 
         if self._is_running_from_installed_location():
+            portable_asset = find_exact_name_match(portable_preferred_names)
+            if portable_asset:
+                return portable_asset
+
+            for asset in normalized_assets:
+                asset_name = str(asset.get("name", "") or "").strip()
+                if self._is_portable_zip_asset_name(asset_name) and asset.get("browser_download_url"):
+                    return asset
+
             installer_asset = find_exact_name_match(installer_preferred_names)
             if installer_asset:
                 return installer_asset
@@ -1215,6 +1237,15 @@ class GobiernoPDFDownloader(ctk.CTk):
                 and asset_name.lower().endswith(".exe")
                 and not self._is_installer_asset_name(asset_name)
             ):
+                return asset
+
+        portable_asset = find_exact_name_match(portable_preferred_names)
+        if portable_asset:
+            return portable_asset
+
+        for asset in normalized_assets:
+            asset_name = str(asset.get("name", "") or "").strip()
+            if self._is_portable_zip_asset_name(asset_name) and asset.get("browser_download_url"):
                 return asset
 
         installer_asset = find_exact_name_match(installer_preferred_names)
@@ -1504,11 +1535,120 @@ Remove-Item -LiteralPath $PSCommandPath -Force
             script_file.write(script_content)
         return script_path
 
+    def _create_portable_update_script(self, zip_path, target_dir):
+        script_path = os.path.join(
+            self._update_staging_dir(),
+            f"ri_portable_update_{uuid.uuid4().hex[:8]}.ps1",
+        )
+        script_content = f"""$ErrorActionPreference = 'Stop'
+$pidToWait = {os.getpid()}
+$zipPath = {self._powershell_literal(zip_path)}
+$targetDir = {self._powershell_literal(target_dir)}
+$appExe = Join-Path $targetDir {self._powershell_literal(DEFAULT_EXE_NAME)}
+$parentDir = Split-Path -Parent $targetDir
+$extractRoot = Join-Path $parentDir ('ri_update_' + [guid]::NewGuid().ToString('N'))
+$backupDir = "$targetDir.old"
+$logPath = Join-Path {self._powershell_literal(self._update_staging_dir())} 'portable_update_last.log'
+$deadline = (Get-Date).AddMinutes(5)
+$updateSucceeded = $false
+
+function Write-UpdateLog($message) {{
+    $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    Add-Content -LiteralPath $logPath -Value "[$stamp] $message"
+}}
+
+try {{
+    Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
+}} catch {{}}
+
+Write-UpdateLog "Inicio de actualización portable."
+
+while ((Get-Date) -lt $deadline) {{
+    $proc = Get-Process -Id $pidToWait -ErrorAction SilentlyContinue
+    if (-not $proc) {{
+        break
+    }}
+    Start-Sleep -Seconds 1
+}}
+
+Start-Sleep -Milliseconds 900
+
+try {{
+    Write-UpdateLog "Extrayendo paquete: $zipPath"
+    if (Test-Path -LiteralPath $extractRoot) {{
+        Remove-Item -LiteralPath $extractRoot -Recurse -Force
+    }}
+    Expand-Archive -LiteralPath $zipPath -DestinationPath $extractRoot -Force
+
+    $expandedDir = Join-Path $extractRoot {self._powershell_literal(DEFAULT_PORTABLE_DIR_NAME)}
+    if (-not (Test-Path -LiteralPath $expandedDir)) {{
+        $expandedDir = $extractRoot
+    }}
+    Write-UpdateLog "Contenido extraído en: $expandedDir"
+
+    if (Test-Path -LiteralPath $backupDir) {{
+        Remove-Item -LiteralPath $backupDir -Recurse -Force
+    }}
+
+    if (Test-Path -LiteralPath $targetDir) {{
+        Write-UpdateLog "Moviendo instalación actual a respaldo: $backupDir"
+        Move-Item -LiteralPath $targetDir -Destination $backupDir -Force
+    }}
+
+    Write-UpdateLog "Moviendo nueva versión a: $targetDir"
+    Move-Item -LiteralPath $expandedDir -Destination $targetDir -Force
+
+    foreach ($name in @('unins000.exe', 'unins000.dat', 'unins000.msg')) {{
+        $sourceFile = Join-Path $backupDir $name
+        $targetFile = Join-Path $targetDir $name
+        if ((Test-Path -LiteralPath $sourceFile) -and -not (Test-Path -LiteralPath $targetFile)) {{
+            Copy-Item -LiteralPath $sourceFile -Destination $targetFile -Force
+        }}
+    }}
+
+    if (Test-Path -LiteralPath $appExe) {{
+        Write-UpdateLog "Lanzando nueva aplicación: $appExe"
+        $updateSucceeded = $true
+        Start-Sleep -Seconds 1
+        Start-Process -FilePath $appExe
+    }}
+}} catch {{
+    Write-UpdateLog ("Error: " + ($_ | Out-String))
+    if (Test-Path -LiteralPath $backupDir -and -not (Test-Path -LiteralPath $targetDir)) {{
+        Write-UpdateLog "Restaurando respaldo anterior."
+        Move-Item -LiteralPath $backupDir -Destination $targetDir -Force
+    }}
+    if (Test-Path -LiteralPath $appExe) {{
+        Write-UpdateLog "Reabriendo la versión anterior tras el fallo."
+        Start-Process -FilePath $appExe
+    }}
+}} finally {{
+    if (Test-Path -LiteralPath $extractRoot) {{
+        Remove-Item -LiteralPath $extractRoot -Recurse -Force
+    }}
+    if ($updateSucceeded) {{
+        Write-UpdateLog "Actualización completada correctamente."
+        if (Test-Path -LiteralPath $backupDir) {{
+            Remove-Item -LiteralPath $backupDir -Recurse -Force
+        }}
+        if (Test-Path -LiteralPath $zipPath) {{
+            Remove-Item -LiteralPath $zipPath -Force
+        }}
+        Remove-Item -LiteralPath $PSCommandPath -Force
+    }} else {{
+        Write-UpdateLog "La actualización no terminó. Se conservaron archivos para diagnóstico."
+    }}
+}}
+"""
+        with open(script_path, "w", encoding="utf-8") as script_file:
+            script_file.write(script_content)
+        return script_path
+
     def _shutdown_for_update(self, update_script_path):
         self._set_update_feedback(
             title="Iniciando actualización",
             message="Cerrando la aplicación para continuar la instalación.",
-            detail="En unos segundos verás el instalador con su progreso.",
+            detail="En unos segundos se aplicará la nueva versión.",
             progress=None,
             indeterminate=True,
         )
@@ -1630,25 +1770,32 @@ Remove-Item -LiteralPath $PSCommandPath -Force
         latest_version = self._normalize_version_tag(
             release_info.get("tag_name") or release_info.get("name") or ""
         )
+        if self._is_portable_zip_asset_name(asset_name):
+            install_message = "La aplicación se cerrará y se reemplazará por la nueva versión automáticamente."
+            install_log_message = "Se aplicará la actualización portable."
+        elif self._is_installer_asset_name(asset_name):
+            install_message = "La aplicación se cerrará y se abrirá el instalador con progreso visible."
+            install_log_message = "Se aplicará la actualización con instalador."
+        else:
+            install_message = "La aplicación se cerrará para aplicar el reemplazo del ejecutable."
+            install_log_message = "Se aplicará la actualización reemplazando el ejecutable."
+
         self._set_update_feedback(
             title="Preparando instalación",
             message=f"La versión V{latest_version} ya se descargó correctamente.",
-            detail="La aplicación se cerrará y se abrirá el instalador con progreso visible.",
+            detail=install_message,
             progress=None,
             indeterminate=True,
         )
         self.log(f"Actualización V{latest_version} descargada. Cerrando para instalar...", "WARN")
-        self.log(
-            "Se aplicará la actualización con instalador." if self._is_installer_asset_name(asset_name)
-            else "Se aplicará la actualización reemplazando el ejecutable.",
-            "INFO",
-        )
+        self.log(install_log_message, "INFO")
         self.update_install_pending = True
 
-        if self._is_installer_asset_name(asset_name):
-            installed_dir = self._installed_app_dir()
-            target_exe_path = os.path.join(installed_dir, DEFAULT_EXE_NAME) if installed_dir else exe_path
-            update_script_path = self._create_installer_update_script(temp_exe_path, target_exe_path)
+        if self._is_portable_zip_asset_name(asset_name):
+            target_dir = os.path.dirname(exe_path)
+            update_script_path = self._create_portable_update_script(temp_exe_path, target_dir)
+        elif self._is_installer_asset_name(asset_name):
+            update_script_path = self._create_installer_update_script(temp_exe_path, exe_path)
         else:
             update_script_path = self._create_binary_swap_update_script(temp_exe_path, exe_path)
         self.after(0, lambda p=update_script_path: self._shutdown_for_update(p))
