@@ -99,6 +99,11 @@ class GobiernoPDFDownloader(ctk.CTk):
         self.geometry("1320x860")
         self.minsize(1120, 720)
         self.configure(fg_color=APP_BG)
+
+        # --- Icono de la ventana ---
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.ico")
+        if os.path.exists(icon_path):
+            self.iconbitmap(icon_path)
         
         # Variables de control
         self.driver = None
@@ -850,9 +855,9 @@ class GobiernoPDFDownloader(ctk.CTk):
         if status_text is not None:
             self.status_text = status_text
 
-        self.lbl_success.configure(text=f"Exitos: {self.stats['success']}")
-        self.lbl_error.configure(text=f"Errores: {self.stats['error']}")
-        self.lbl_status.configure(text=f"Estado: {self.status_text}")
+        self.lbl_success.configure(text=str(self.stats['success']))
+        self.lbl_error.configure(text=str(self.stats['error']))
+        self.lbl_status.configure(text=self.status_text)
 
         chip_text = "LISTO"
         self._chip_mode = "idle"
@@ -3177,6 +3182,7 @@ try {{
                                 if not self._is_valid_pdf_file(file_path):
                                     raise Exception(f"Se descargo un archivo invalido para {detail_label}")
                                 self.log(f"Guardado: {filename}", "SUCCESS")
+                                self.after(0, lambda fn=filename: self._add_history_entry(fn))
                                 if target_identity:
                                     last_target_identity = target_identity
                                 self.stats["success"] += 1
@@ -3293,6 +3299,7 @@ try {{
         self._build_workspace_modern()
         self._build_log_modern()
         self._build_footer_modern()
+        self._build_history_view()
 
         self._refresh_stats_labels("Esperando inicio")
         self._update_retry_button_state()
@@ -3303,20 +3310,22 @@ try {{
     def _build_sidebar_modern(self):
         self.sidebar_frame = ctk.CTkFrame(
             self,
-            width=252,
+            width=220,
             corner_radius=0,
             fg_color="#173835",
             border_width=0,
         )
         self.sidebar_frame.grid(row=0, column=0, sticky="ns")
         self.sidebar_frame.grid_propagate(False)
-        self.sidebar_frame.grid_rowconfigure(5, weight=1)
+        self.sidebar_frame.grid_columnconfigure(0, weight=1)
+        self.sidebar_frame.grid_rowconfigure(4, weight=1)
 
+        # --- Brand header ---
         self.sidebar_brand = ctk.CTkFrame(
             self.sidebar_frame,
             fg_color="#204A46",
             corner_radius=0,
-            height=186,
+            height=100,
         )
         self.sidebar_brand.grid(row=0, column=0, sticky="ew")
         self.sidebar_brand.grid_propagate(False)
@@ -3324,105 +3333,301 @@ try {{
         ctk.CTkLabel(
             self.sidebar_brand,
             text="Centro RI",
-            font=("Segoe UI", 11, "bold"),
+            font=("Segoe UI", 10, "bold"),
             text_color="#E4D7C1",
-        ).pack(anchor="w", padx=18, pady=(18, 4))
+        ).pack(anchor="w", padx=16, pady=(14, 2))
 
         self.lbl_sidebar_title = ctk.CTkLabel(
             self.sidebar_brand,
             text="Descargas\ninteligentes",
-            font=("Bahnschrift SemiBold", 28),
+            font=("Bahnschrift SemiBold", 22),
             text_color="#FFF8EC",
             justify="left",
         )
-        self.lbl_sidebar_title.pack(anchor="w", padx=18)
+        self.lbl_sidebar_title.pack(anchor="w", padx=16)
 
-        self.sidebar_description = ctk.CTkLabel(
-            self.sidebar_brand,
-            text="Interfaz clara, seguimiento en vivo y menos pasos para cada usuario.",
-            wraplength=194,
-            justify="left",
-            font=("Segoe UI", 12),
-            text_color="#C9D7D4",
-        )
-        self.sidebar_description.pack(anchor="w", padx=18, pady=(8, 0))
+        # --- Botones ---
+        sidebar_buttons = [
+            ("Abrir carpeta", self._open_download_folder),
+            ("Ver historial", self._show_history_view),
+            ("Actualizaciones", lambda: self._check_for_updates(manual=True)),
+        ]
+        for idx, (label, cmd) in enumerate(sidebar_buttons):
+            ctk.CTkButton(
+                self.sidebar_frame,
+                text=label,
+                command=cmd,
+                height=36,
+                fg_color="#2A5B56",
+                hover_color="#346963",
+                text_color="#FFF9EF",
+                corner_radius=12,
+                font=("Segoe UI", 12, "bold"),
+                anchor="w",
+            ).grid(row=idx + 1, column=0, sticky="ew", padx=12, pady=(12 if idx == 0 else 3, 3))
 
-        self.nav_dashboard = ctk.CTkButton(
+        # --- Footer ---
+        self.sidebar_hint = ctk.CTkLabel(
             self.sidebar_frame,
-            text="1  Preparar carpeta",
-            command=lambda: self.entry_dir.focus_set(),
-            height=42,
+            text=f"{APP_NAME}\n{APP_VERSION_LABEL}",
+            font=("Segoe UI", 9),
+            text_color="#6B8E89",
+            wraplength=180,
+            justify="left",
+        )
+        self.sidebar_hint.grid(row=5, column=0, padx=14, pady=(4, 10), sticky="sw")
+
+    # ---- Historial en el area principal ----
+
+    def _build_history_view(self):
+        """Construye el frame de historial (oculto por defecto) en el area principal."""
+        self.history_frame = ctk.CTkFrame(
+            self.main_frame,
+            fg_color="transparent",
+        )
+        self.history_frame.grid_columnconfigure(0, weight=1)
+        self.history_frame.grid_rowconfigure(1, weight=1)
+
+        # Cabecera con titulo y boton volver
+        history_header = ctk.CTkFrame(
+            self.history_frame,
+            corner_radius=24,
+            fg_color=CARD_BG,
+            border_color=CARD_BORDER,
+            border_width=1,
+        )
+        history_header.grid(row=0, column=0, sticky="ew", padx=22, pady=(20, 14))
+        history_header.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            history_header,
+            text="Historial de descargas",
+            font=("Bahnschrift SemiBold", 28),
+            text_color=TEXT_MAIN,
+        ).grid(row=0, column=0, padx=24, pady=(22, 6), sticky="w")
+
+        ctk.CTkLabel(
+            history_header,
+            text="Todas las descargas exitosas registradas por el sistema.",
+            font=("Segoe UI", 13),
+            text_color=TEXT_MUTED,
+        ).grid(row=1, column=0, padx=24, pady=(0, 6), sticky="w")
+
+        header_actions = ctk.CTkFrame(history_header, fg_color="transparent")
+        header_actions.grid(row=0, column=1, rowspan=2, padx=22, pady=16, sticky="e")
+
+        ctk.CTkButton(
+            header_actions,
+            text="Volver",
+            command=self._hide_history_view,
+            width=100,
+            height=36,
             fg_color="#2A5B56",
             hover_color="#346963",
             text_color="#FFF9EF",
-            corner_radius=14,
+            corner_radius=12,
             font=("Segoe UI", 13, "bold"),
-            anchor="w",
-        )
-        self.nav_dashboard.grid(row=1, column=0, sticky="ew", padx=16, pady=(18, 8))
+        ).pack(side="right", padx=(8, 0))
 
-        self.nav_history = ctk.CTkButton(
-            self.sidebar_frame,
-            text="2  Abrir y ejecutar",
-            command=lambda: self.btn_start.focus_set(),
-            height=40,
-            fg_color="#214A46",
-            hover_color="#295752",
-            text_color="#E8E0D2",
-            corner_radius=14,
-            font=("Segoe UI", 13, "bold"),
-            anchor="w",
-        )
-        self.nav_history.grid(row=2, column=0, sticky="ew", padx=16, pady=8)
+        ctk.CTkButton(
+            header_actions,
+            text="Limpiar historial",
+            command=self._clear_history,
+            width=130,
+            height=36,
+            fg_color="transparent",
+            hover_color="#F0E0CC",
+            text_color=TEXT_MUTED,
+            border_width=1,
+            border_color=CARD_BORDER,
+            corner_radius=12,
+            font=("Segoe UI", 12),
+        ).pack(side="right")
 
-        self.nav_settings = ctk.CTkButton(
-            self.sidebar_frame,
-            text="3  Resolver pendientes",
-            command=lambda: self.btn_retry_failed.focus_set(),
-            height=40,
-            fg_color="#214A46",
-            hover_color="#295752",
-            text_color="#E8E0D2",
-            corner_radius=14,
-            font=("Segoe UI", 13, "bold"),
-            anchor="w",
+        # Contador de descargas
+        self.history_count_label = ctk.CTkLabel(
+            history_header,
+            text="",
+            font=("Segoe UI", 11),
+            text_color=TEXT_MUTED,
         )
-        self.nav_settings.grid(row=3, column=0, sticky="ew", padx=16, pady=8)
+        self.history_count_label.grid(row=2, column=0, padx=24, pady=(0, 16), sticky="w")
 
-        self.sidebar_support = ctk.CTkFrame(
-            self.sidebar_frame,
-            fg_color="#F0E2CF",
-            corner_radius=18,
-            border_width=0,
+        # Area scrollable con las entradas
+        self.history_scroll = ctk.CTkScrollableFrame(
+            self.history_frame,
+            corner_radius=22,
+            fg_color=CARD_BG,
+            border_color=CARD_BORDER,
+            border_width=1,
+            scrollbar_button_color="#D4C9B8",
+            scrollbar_button_hover_color="#B8A998",
         )
-        self.sidebar_support.grid(row=4, column=0, sticky="ew", padx=16, pady=(18, 0))
+        self.history_scroll.grid(row=1, column=0, sticky="nsew", padx=22, pady=(0, 12))
+        self.history_scroll.grid_columnconfigure(0, weight=1)
+
+        self.history_entries = []
+        self._history_visible = False
+
+    def _load_download_history(self):
+        """Lee las ultimas descargas exitosas del archivo de log y las muestra."""
+        # Limpiar entradas previas
+        for widget in self.history_scroll.winfo_children():
+            widget.destroy()
+        self.history_entries.clear()
+
+        entries = []
+        if os.path.exists(LOG_FILE):
+            try:
+                with open(LOG_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if "[SUCCESS] Guardado:" in line:
+                            match = re.match(
+                                r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] \[SUCCESS\] Guardado: (.+)",
+                                line.strip(),
+                            )
+                            if match:
+                                entries.append((match.group(1), match.group(2)))
+            except Exception:
+                pass
+
+        if not entries:
+            self._show_empty_history()
+            self.history_count_label.configure(text="0 descargas registradas")
+            return
+
+        # Mostrar las ultimas 200 (mas recientes primero)
+        recent = list(reversed(entries[-200:]))
+        for timestamp, filename in recent:
+            self._create_history_row(timestamp, filename)
+
+        self.history_count_label.configure(text=f"{len(recent)} descargas registradas")
+
+    def _show_empty_history(self):
+        """Muestra mensaje cuando no hay historial."""
+        empty_frame = ctk.CTkFrame(self.history_scroll, fg_color="transparent")
+        empty_frame.pack(fill="x", padx=20, pady=40)
 
         ctk.CTkLabel(
-            self.sidebar_support,
-            text="Como se usa",
-            font=("Segoe UI", 12, "bold"),
-            text_color="#3E3A35",
-        ).pack(anchor="w", padx=14, pady=(14, 4))
+            empty_frame,
+            text="Sin descargas registradas",
+            font=("Bahnschrift SemiBold", 18),
+            text_color=TEXT_MUTED,
+        ).pack(anchor="center", pady=(20, 6))
 
-        self.sidebar_support_text = ctk.CTkLabel(
-            self.sidebar_support,
-            text="Abre el portal, inicia sesion, coloca la tabla en 100 registros y ejecuta la descarga.",
-            wraplength=194,
-            justify="left",
-            font=("Segoe UI", 11),
-            text_color="#5D564F",
-        )
-        self.sidebar_support_text.pack(anchor="w", padx=14, pady=(0, 14))
+        ctk.CTkLabel(
+            empty_frame,
+            text="Cuando descargues archivos, apareceran aqui\ncon la fecha y nombre del documento.",
+            font=("Segoe UI", 13),
+            text_color="#A09888",
+            justify="center",
+        ).pack(anchor="center")
 
-        self.sidebar_hint = ctk.CTkLabel(
-            self.sidebar_frame,
-            text="Pensado para verse simple desde el primer vistazo.",
-            font=("Segoe UI", 10, "bold"),
-            text_color="#AFC0BC",
-            wraplength=196,
-            justify="left",
+    def _create_history_row(self, timestamp, filename):
+        """Crea una fila visual en el historial."""
+        row = ctk.CTkFrame(
+            self.history_scroll,
+            fg_color=SURFACE_SOFT,
+            corner_radius=14,
+            height=52,
         )
-        self.sidebar_hint.grid(row=6, column=0, padx=16, pady=(10, 16), sticky="sw")
+        row.pack(fill="x", padx=12, pady=3)
+        row.pack_propagate(False)
+        row.grid_columnconfigure(0, weight=1)
+
+        # Formato de fecha legible
+        short_ts = timestamp
+        try:
+            dt = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+            meses = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"]
+            short_ts = f"{dt.day} {meses[dt.month - 1]} {dt.year}  {dt.strftime('%H:%M')}"
+        except Exception:
+            pass
+
+        ctk.CTkLabel(
+            row,
+            text=filename,
+            font=("Segoe UI", 12),
+            text_color=TEXT_MAIN,
+            anchor="w",
+        ).grid(row=0, column=0, padx=14, pady=(8, 0), sticky="w")
+
+        ctk.CTkLabel(
+            row,
+            text=short_ts,
+            font=("Segoe UI", 10),
+            text_color=TEXT_MUTED,
+            anchor="w",
+        ).grid(row=1, column=0, padx=14, pady=(0, 6), sticky="w")
+
+        self.history_entries.append(row)
+
+    def _show_history_view(self):
+        """Muestra la vista de historial ocultando el contenido principal."""
+        if self._history_visible:
+            return
+        self._load_download_history()
+        # Ocultar contenido principal
+        self.hero_frame.grid_remove()
+        self.content_grid.grid_remove()
+        self.log_frame.grid_remove()
+        self.footer_frame.grid_remove()
+        # Mostrar historial
+        self.history_frame.grid(row=0, column=0, rowspan=4, sticky="nsew", padx=0, pady=0)
+        self._history_visible = True
+
+    def _hide_history_view(self):
+        """Oculta la vista de historial y restaura el contenido principal."""
+        if not self._history_visible:
+            return
+        self.history_frame.grid_remove()
+        # Restaurar contenido principal
+        self.hero_frame.grid()
+        self.content_grid.grid()
+        self.log_frame.grid()
+        self.footer_frame.grid()
+        self._history_visible = False
+
+    def _add_history_entry(self, filename):
+        """Registra una descarga exitosa. Si la vista de historial esta abierta, la refresca."""
+        if self._history_visible:
+            self._load_download_history()
+
+    def _open_download_folder(self):
+        """Abre la carpeta de descargas en el explorador."""
+        folder = self._normalize_folder_path(self.download_dir.get())
+        if os.path.isdir(folder):
+            os.startfile(folder)
+        else:
+            self.log(f"La carpeta no existe: {folder}", "WARN")
+
+    def _clear_history(self):
+        """Limpia el archivo de historial y la vista."""
+        if not os.path.exists(LOG_FILE):
+            self.log("No hay historial para limpiar.", "INFO")
+            return
+        confirm = messagebox.askyesno(
+            "Limpiar historial",
+            "Esto eliminara todas las entradas de descargas del historial.\n\nContinuar?",
+        )
+        if not confirm:
+            return
+        # Reescribir log sin las lineas de SUCCESS/Guardado
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            filtered = [l for l in lines if "[SUCCESS] Guardado:" not in l]
+            with open(LOG_FILE, "w", encoding="utf-8") as f:
+                f.writelines(filtered)
+        except Exception:
+            pass
+        # Refrescar vista
+        for widget in self.history_scroll.winfo_children():
+            widget.destroy()
+        self.history_entries.clear()
+        self._show_empty_history()
+        self.history_count_label.configure(text="0 descargas registradas")
+        self.log("Historial de descargas limpiado.", "INFO")
 
     def _build_main_surface_modern(self):
         self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -3463,309 +3668,278 @@ try {{
     def _build_hero_modern(self):
         self.hero_frame = ctk.CTkFrame(
             self.main_frame,
-            corner_radius=24,
+            corner_radius=18,
             fg_color=CARD_BG,
             border_color=CARD_BORDER,
             border_width=1,
         )
-        self.hero_frame.grid(row=0, column=0, sticky="ew", padx=22, pady=(20, 14))
+        self.hero_frame.grid(row=0, column=0, sticky="ew", padx=18, pady=(14, 8))
         self.hero_frame.grid_columnconfigure(0, weight=1)
-        self.hero_frame.grid_columnconfigure(1, weight=0)
+
+        # --- Top row: title + badges ---
+        hero_top = ctk.CTkFrame(self.hero_frame, fg_color="transparent")
+        hero_top.grid(row=0, column=0, sticky="ew", padx=18, pady=(14, 0))
+        hero_top.grid_columnconfigure(0, weight=1)
 
         self.lbl_title = ctk.CTkLabel(
-            self.hero_frame,
-            text="Centro de descargas automaticas",
-            font=("Bahnschrift SemiBold", 32),
+            hero_top,
+            text="Centro de descargas",
+            font=("Bahnschrift SemiBold", 22),
             text_color=TEXT_MAIN,
         )
-        self.lbl_title.grid(row=0, column=0, padx=24, pady=(22, 6), sticky="w")
+        self.lbl_title.grid(row=0, column=0, sticky="w")
 
-        self.lbl_subtitle = ctk.CTkLabel(
-            self.hero_frame,
-            text="La carpeta se guarda automaticamente y se recuerda al volver a abrir.",
-            wraplength=540,
-            justify="left",
-            font=("Segoe UI", 13),
-            text_color=TEXT_MUTED,
-        )
-        self.lbl_subtitle.grid(row=1, column=0, padx=24, sticky="w")
-
-        self.lbl_dir = ctk.CTkLabel(
-            self.hero_frame,
-            text=self._format_path_preview(self.download_dir.get()),
-            font=("Consolas", 11, "bold"),
-            text_color="#4E4B45",
-            fg_color=SURFACE_SOFT,
-            corner_radius=999,
-            padx=14,
-            pady=7,
-        )
-        self.lbl_dir.grid(row=2, column=0, padx=24, pady=(16, 16), sticky="w")
-
-        self.hero_actions = ctk.CTkFrame(self.hero_frame, fg_color="transparent")
-        self.hero_actions.grid(row=0, column=1, rowspan=3, padx=22, pady=22, sticky="ne")
-        self.hero_actions.grid_columnconfigure(0, weight=1)
-
-        self.btn_update = ctk.CTkButton(
-            self.hero_actions,
-            text="Buscar actualizacion",
-            command=lambda: self.start_update_check_thread(manual=True),
-            width=176,
-            height=38,
-            fg_color=PRIMARY,
-            hover_color=PRIMARY_HOVER,
-            text_color="#FFF8EF",
-            corner_radius=999,
-            font=("Segoe UI", 12, "bold"),
-        )
-        self.btn_update.grid(row=0, column=0, sticky="ew")
-
-        self.lbl_version = ctk.CTkLabel(
-            self.hero_actions,
-            text=APP_VERSION_LABEL,
-            font=("Segoe UI", 12, "bold"),
-            text_color="#4E4B45",
-            fg_color=SURFACE_SOFT,
-            corner_radius=999,
-            padx=14,
-            pady=6,
-        )
-        self.lbl_version.grid(row=1, column=0, pady=(10, 10), sticky="e")
+        # Badges right
+        badges = ctk.CTkFrame(hero_top, fg_color="transparent")
+        badges.grid(row=0, column=1, sticky="e")
 
         self.lbl_runtime_status = ctk.CTkLabel(
-            self.hero_actions,
-            text="LISTO",
-            font=("Segoe UI", 12, "bold"),
-            fg_color=PRIMARY,
-            corner_radius=999,
-            padx=14,
-            pady=6,
-            text_color="#FFF8EF",
+            badges, text="LISTO",
+            font=("Segoe UI", 10, "bold"), fg_color=PRIMARY,
+            corner_radius=999, padx=10, pady=3, text_color="#FFF8EF",
         )
-        self.lbl_runtime_status.grid(row=2, column=0, sticky="e")
+        self.lbl_runtime_status.pack(side="right", padx=(6, 0))
 
+        self.lbl_version = ctk.CTkLabel(
+            badges, text=APP_VERSION_LABEL,
+            font=("Segoe UI", 10, "bold"), text_color="#4E4B45",
+            fg_color=SURFACE_SOFT, corner_radius=999, padx=10, pady=3,
+        )
+        self.lbl_version.pack(side="right")
+
+        # --- Metrics row ---
+        metrics_bar = ctk.CTkFrame(self.hero_frame, fg_color="transparent")
+        metrics_bar.grid(row=1, column=0, sticky="ew", padx=18, pady=(12, 0))
+        metrics_bar.grid_columnconfigure((0, 1), weight=1)
+
+        # Completados
+        self.success_card = ctk.CTkFrame(
+            metrics_bar, fg_color="#E8F5EC", corner_radius=12,
+        )
+        self.success_card.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self.success_card.grid_columnconfigure((0, 1), weight=0)
+
+        self.lbl_success = ctk.CTkLabel(
+            self.success_card, text="0",
+            font=("Bahnschrift SemiBold", 28), text_color=SUCCESS,
+        )
+        self.lbl_success.pack(side="left", padx=(14, 6), pady=8)
+        ctk.CTkLabel(
+            self.success_card, text="completados",
+            font=("Segoe UI", 11), text_color="#5F7A68",
+        ).pack(side="left", pady=8)
+
+        # Errores
+        self.error_card = ctk.CTkFrame(
+            metrics_bar, fg_color="#FBEEEA", corner_radius=12,
+        )
+        self.error_card.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
+        self.lbl_error = ctk.CTkLabel(
+            self.error_card, text="0",
+            font=("Bahnschrift SemiBold", 28), text_color=DANGER,
+        )
+        self.lbl_error.pack(side="left", padx=(14, 6), pady=8)
+        ctk.CTkLabel(
+            self.error_card, text="errores",
+            font=("Segoe UI", 11), text_color="#84675D",
+        ).pack(side="left", pady=8)
+
+        # --- Progress bar ---
         self.header_activity = ctk.CTkProgressBar(
             self.hero_frame,
-            height=6,
+            height=4,
             corner_radius=999,
             progress_color=PRIMARY,
             fg_color="#E6DDCF",
         )
-        self.header_activity.grid(row=3, column=0, columnspan=2, sticky="ew", padx=24, pady=(0, 18))
+        self.header_activity.grid(row=2, column=0, sticky="ew", padx=18, pady=(12, 14))
         self.header_activity.configure(mode="indeterminate")
         self.header_activity.stop()
 
+        # Hidden helpers for compatibility
+        self.lbl_subtitle = ctk.CTkLabel(self.hero_frame, text="", height=0, fg_color="transparent")
+        self.lbl_dir = ctk.CTkLabel(self.hero_frame, text="", height=0, fg_color="transparent")
+        self.hero_actions = ctk.CTkFrame(self.hero_frame, fg_color="transparent", height=0)
+
     def _build_workspace_modern(self):
         self.content_grid = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        self.content_grid.grid(row=1, column=0, sticky="nsew", padx=22, pady=(0, 10))
-        self.content_grid.grid_columnconfigure(0, weight=8)
-        self.content_grid.grid_columnconfigure(1, weight=5)
+        self.content_grid.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 8))
+        self.content_grid.grid_columnconfigure(0, weight=1)
         self.content_grid.grid_rowconfigure(1, weight=1)
 
+        # ---- Row 0: Carpeta ----
         self.header_frame = ctk.CTkFrame(
             self.content_grid,
-            corner_radius=22,
+            corner_radius=18,
             fg_color=CARD_BG,
             border_color=CARD_BORDER,
             border_width=1,
         )
-        self.header_frame.grid(row=0, column=0, sticky="ew", padx=(0, 12), pady=(0, 12))
+        self.header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         self.header_frame.grid_columnconfigure(0, weight=1)
         self.header_frame.grid_columnconfigure(1, weight=0)
 
-        ctk.CTkLabel(
-            self.header_frame,
-            text="Destino de guardado",
-            font=("Segoe UI", 18, "bold"),
-            text_color=TEXT_MAIN,
-        ).grid(row=0, column=0, padx=20, pady=(18, 6), sticky="w")
-
         self.header_description = ctk.CTkLabel(
             self.header_frame,
-            text="Cada ejecucion crea su propia carpeta de trabajo para mantener todo ordenado.",
-            font=("Segoe UI", 12),
-            text_color=TEXT_MUTED,
-            wraplength=460,
-            justify="left",
+            text="Destino de guardado",
+            font=("Segoe UI", 13, "bold"),
+            text_color=TEXT_MAIN,
+            wraplength=400,
         )
-        self.header_description.grid(row=1, column=0, columnspan=2, padx=20, pady=(0, 12), sticky="w")
+        self.header_description.grid(row=0, column=0, padx=16, pady=(12, 6), sticky="w")
 
         self.entry_dir = ctk.CTkEntry(
             self.header_frame,
             textvariable=self.download_dir,
-            height=46,
+            height=38,
             fg_color=INPUT_BG,
             border_color="#D8CBBC",
             border_width=1,
             text_color=TEXT_MAIN,
-            font=("Consolas", 12),
-            corner_radius=14,
+            font=("Consolas", 11),
+            corner_radius=10,
         )
-        self.entry_dir.grid(row=2, column=0, padx=(20, 12), pady=(0, 18), sticky="ew")
+        self.entry_dir.grid(row=1, column=0, padx=(16, 8), pady=(0, 12), sticky="ew")
 
         self.btn_folder = ctk.CTkButton(
             self.header_frame,
-            text="Cambiar carpeta",
+            text="Cambiar",
             command=self._select_folder,
-            width=150,
-            height=44,
+            width=90,
+            height=38,
             fg_color="#314B48",
             hover_color="#243836",
             text_color="#FFF8EF",
-            corner_radius=14,
+            corner_radius=10,
             font=("Segoe UI", 12, "bold"),
         )
-        self.btn_folder.grid(row=2, column=1, padx=(0, 18), pady=(0, 18), sticky="e")
+        self.btn_folder.grid(row=1, column=1, padx=(0, 14), pady=(0, 12), sticky="e")
 
+        # ---- Row 1: Controles + Estado ----
+        self.bottom_row = ctk.CTkFrame(self.content_grid, fg_color="transparent")
+        self.bottom_row.grid(row=1, column=0, sticky="nsew")
+        self.bottom_row.grid_columnconfigure(0, weight=3)
+        self.bottom_row.grid_columnconfigure(1, weight=2)
+        self.bottom_row.grid_rowconfigure(0, weight=1)
+
+        # Panel de controles
         self.controls_frame = ctk.CTkFrame(
-            self.content_grid,
+            self.bottom_row,
             fg_color=CARD_BG,
             border_color=CARD_BORDER,
             border_width=1,
-            corner_radius=22,
+            corner_radius=18,
         )
-        self.controls_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 12))
-        self.controls_frame.grid_columnconfigure(0, weight=4)
-        self.controls_frame.grid_columnconfigure(1, weight=5)
-
-        ctk.CTkLabel(
-            self.controls_frame,
-            text="Motor de la sesion",
-            font=("Segoe UI", 18, "bold"),
-            text_color=TEXT_MAIN,
-        ).grid(row=0, column=0, columnspan=2, padx=20, pady=(18, 4), sticky="w")
+        self.controls_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self.controls_frame.grid_columnconfigure(0, weight=1)
+        self.controls_frame.grid_columnconfigure(1, weight=1)
+        self.controls_frame.grid_rowconfigure(3, weight=0)
 
         self.controls_description = ctk.CTkLabel(
             self.controls_frame,
-            text="Todo esta organizado para que una persona entienda donde empieza, como avanza y que hacer si algo falla.",
-            font=("Segoe UI", 12),
-            text_color=TEXT_MUTED,
-            wraplength=620,
-            justify="left",
+            text="Controles",
+            font=("Segoe UI", 14, "bold"),
+            text_color=TEXT_MAIN,
+            wraplength=500,
         )
-        self.controls_description.grid(row=1, column=0, columnspan=2, padx=20, pady=(0, 14), sticky="w")
+        self.controls_description.grid(row=0, column=0, columnspan=2, padx=16, pady=(14, 4), sticky="w")
 
+        # Progress + Actions inside controls
         self.console_frame = ctk.CTkFrame(self.controls_frame, fg_color="transparent")
-        self.console_frame.grid(row=2, column=0, columnspan=2, sticky="nsew")
-        self.console_frame.grid_columnconfigure(0, weight=4)
-        self.console_frame.grid_columnconfigure(1, weight=5)
+        self.console_frame.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        self.console_frame.grid_columnconfigure(0, weight=2)
+        self.console_frame.grid_columnconfigure(1, weight=3)
 
         self.progress_shell = ctk.CTkFrame(
             self.console_frame,
             fg_color=INPUT_BG,
-            corner_radius=20,
+            corner_radius=16,
             border_width=0,
         )
-        self.progress_shell.grid(row=0, column=0, padx=(18, 10), pady=(0, 18), sticky="nsew")
+        self.progress_shell.grid(row=0, column=0, padx=(14, 6), pady=(4, 14), sticky="nsew")
         self.progress_shell.grid_columnconfigure(0, weight=1)
 
         self.progress_ring_host = ctk.CTkFrame(self.progress_shell, fg_color="transparent")
-        self.progress_ring_host.grid(row=0, column=0, pady=(18, 8), padx=14)
+        self.progress_ring_host.grid(row=0, column=0, pady=(12, 6), padx=10)
 
         self.progress_ring_canvas = tk.Canvas(
             self.progress_ring_host,
-            width=220,
-            height=220,
+            width=160,
+            height=160,
             bd=0,
             highlightthickness=0,
             bg=INPUT_BG,
         )
         self.progress_ring_canvas.pack()
-        self.progress_ring_canvas.create_oval(24, 24, 196, 196, outline="#DDD1C4", width=14)
+        self.progress_ring_canvas.create_oval(16, 16, 144, 144, outline="#DDD1C4", width=12)
         self.progress_ring_arc = self.progress_ring_canvas.create_arc(
-            24,
-            24,
-            196,
-            196,
-            start=90,
-            extent=0,
-            style="arc",
-            outline=PRIMARY,
-            width=14,
+            16, 16, 144, 144,
+            start=90, extent=0, style="arc", outline=PRIMARY, width=12,
         )
         self.progress_ring_canvas.create_text(
-            110,
-            78,
-            text="PROGRESO",
-            fill="#7D756D",
-            font=("Segoe UI", 10, "bold"),
+            80, 56, text="PROGRESO", fill="#7D756D", font=("Segoe UI", 8, "bold"),
         )
         self.progress_ring_text = self.progress_ring_canvas.create_text(
-            110,
-            113,
-            text="0%",
-            fill=TEXT_MAIN,
-            font=("Bahnschrift SemiBold", 26),
+            80, 82, text="0%", fill=TEXT_MAIN, font=("Bahnschrift SemiBold", 22),
         )
         self.progress_ring_canvas.create_text(
-            110,
-            145,
-            text="Seguimiento visual\nen tiempo real",
-            fill="#7D756D",
-            font=("Segoe UI", 10),
-            justify="center",
+            80, 108, text="Tiempo real", fill="#7D756D", font=("Segoe UI", 9), justify="center",
         )
 
         self.progress = ctk.CTkProgressBar(
             self.progress_shell,
-            height=10,
+            height=8,
             corner_radius=999,
             progress_color=PRIMARY,
             fg_color="#DDD1C4",
         )
         self.progress.set(0)
-        self.progress.grid(row=1, column=0, padx=18, pady=(2, 18), sticky="ew")
+        self.progress.grid(row=1, column=0, padx=14, pady=(0, 12), sticky="ew")
 
+        # Action buttons
         self.action_subframe = ctk.CTkFrame(self.console_frame, fg_color="transparent")
-        self.action_subframe.grid(row=0, column=1, padx=(10, 18), pady=(0, 18), sticky="nsew")
+        self.action_subframe.grid(row=0, column=1, padx=(6, 14), pady=(4, 14), sticky="nsew")
         self.action_subframe.grid_columnconfigure((0, 1), weight=1)
-
-        ctk.CTkLabel(
-            self.action_subframe,
-            text="Acciones principales",
-            font=("Segoe UI", 14, "bold"),
-            text_color=TEXT_MAIN,
-        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(4, 4))
 
         self.action_description = ctk.CTkLabel(
             self.action_subframe,
-            text="Sigue el orden natural del flujo: abrir portal, iniciar sesion y comenzar el procesamiento.",
-            font=("Segoe UI", 12),
-            text_color=TEXT_MUTED,
+            text="Acciones",
+            font=("Segoe UI", 12, "bold"),
+            text_color=TEXT_MAIN,
             wraplength=300,
-            justify="left",
         )
-        self.action_description.grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 14))
+        self.action_description.grid(row=0, column=0, columnspan=2, sticky="w", pady=(4, 8))
 
-        btn_font = ("Segoe UI", 13, "bold")
-        btn_height = 44
+        btn_font = ("Segoe UI", 12, "bold")
+        btn_height = 40
 
         self.btn_browser = ctk.CTkButton(
             self.action_subframe,
-            text="1. Abrir portal",
+            text="Abrir portal",
             command=self.launch_browser,
             height=btn_height,
-            corner_radius=14,
+            corner_radius=12,
             font=btn_font,
             fg_color=PRIMARY,
             hover_color=PRIMARY_HOVER,
             text_color="#FFF8EF",
         )
-        self.btn_browser.grid(row=2, column=0, padx=(0, 8), pady=(0, 10), sticky="ew")
+        self.btn_browser.grid(row=1, column=0, padx=(0, 4), pady=(0, 6), sticky="ew")
 
         self.btn_start = ctk.CTkButton(
             self.action_subframe,
-            text="2. Iniciar descarga",
+            text="Iniciar descarga",
             command=self.start_scraping_thread,
             state="disabled",
             height=btn_height,
-            corner_radius=14,
+            corner_radius=12,
             font=btn_font,
             fg_color=PRIMARY,
             hover_color=PRIMARY_HOVER,
             text_color="#FFF8EF",
         )
-        self.btn_start.grid(row=2, column=1, padx=(8, 0), pady=(0, 10), sticky="ew")
+        self.btn_start.grid(row=1, column=1, padx=(4, 0), pady=(0, 6), sticky="ew")
 
         self.btn_pause = ctk.CTkButton(
             self.action_subframe,
@@ -3773,13 +3947,13 @@ try {{
             command=self.toggle_pause,
             state="disabled",
             height=btn_height,
-            corner_radius=14,
+            corner_radius=12,
             font=btn_font,
             fg_color=WARN,
             hover_color=WARN_HOVER,
             text_color="#FFF8EF",
         )
-        self.btn_pause.grid(row=3, column=0, padx=(0, 8), pady=(0, 10), sticky="ew")
+        self.btn_pause.grid(row=2, column=0, padx=(0, 4), pady=(0, 6), sticky="ew")
 
         self.btn_cancel = ctk.CTkButton(
             self.action_subframe,
@@ -3787,13 +3961,13 @@ try {{
             command=self.stop_process,
             state="disabled",
             height=btn_height,
-            corner_radius=14,
+            corner_radius=12,
             font=btn_font,
             fg_color=DANGER,
             hover_color=DANGER_HOVER,
             text_color="#FFF8EF",
         )
-        self.btn_cancel.grid(row=3, column=1, padx=(8, 0), pady=(0, 10), sticky="ew")
+        self.btn_cancel.grid(row=2, column=1, padx=(4, 0), pady=(0, 6), sticky="ew")
 
         self.btn_retry_failed = ctk.CTkButton(
             self.action_subframe,
@@ -3801,155 +3975,98 @@ try {{
             command=self.retry_failed_rows_thread,
             state="disabled",
             height=btn_height,
-            corner_radius=14,
+            corner_radius=12,
             font=btn_font,
             fg_color="#344846",
             hover_color="#253633",
             text_color="#FFF8EF",
         )
-        self.btn_retry_failed.grid(row=4, column=0, columnspan=2, pady=(0, 6), sticky="ew")
+        self.btn_retry_failed.grid(row=3, column=0, columnspan=2, pady=(0, 4), sticky="ew")
 
-        self.metrics_row = ctk.CTkFrame(self.content_grid, fg_color="transparent")
-        self.metrics_row.grid(row=0, column=1, sticky="ew")
-        self.metrics_row.grid_columnconfigure((0, 1), weight=1)
-
-        self.success_card = ctk.CTkFrame(
-            self.metrics_row,
-            fg_color="#EEF7F0",
-            border_color="#D5E8D9",
-            border_width=1,
-            corner_radius=18,
-        )
-        self.success_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        ctk.CTkLabel(
-            self.success_card,
-            text="COMPLETADOS",
-            font=("Segoe UI", 10, "bold"),
-            text_color="#5F7A68",
-        ).pack(anchor="w", padx=14, pady=(14, 2))
-        self.lbl_success = ctk.CTkLabel(
-            self.success_card,
-            text="0\narchivos",
-            font=("Bahnschrift SemiBold", 26),
-            text_color=SUCCESS,
-            justify="left",
-        )
-        self.lbl_success.pack(anchor="w", padx=14, pady=(0, 14))
-
-        self.error_card = ctk.CTkFrame(
-            self.metrics_row,
-            fg_color="#FBF0EC",
-            border_color="#EBCFC7",
-            border_width=1,
-            corner_radius=18,
-        )
-        self.error_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-        ctk.CTkLabel(
-            self.error_card,
-            text="INCIDENCIAS",
-            font=("Segoe UI", 10, "bold"),
-            text_color="#84675D",
-        ).pack(anchor="w", padx=14, pady=(14, 2))
-        self.lbl_error = ctk.CTkLabel(
-            self.error_card,
-            text="0\nerrores",
-            font=("Bahnschrift SemiBold", 26),
-            text_color=DANGER,
-            justify="left",
-        )
-        self.lbl_error.pack(anchor="w", padx=14, pady=(0, 14))
-
+        # Panel de estado (derecha)
         self.status_panel = ctk.CTkFrame(
-            self.content_grid,
+            self.bottom_row,
             fg_color=CARD_BG,
             border_color=CARD_BORDER,
             border_width=1,
-            corner_radius=22,
+            corner_radius=18,
         )
-        self.status_panel.grid(row=1, column=1, sticky="nsew")
+        self.status_panel.grid(row=0, column=1, sticky="nsew")
         self.status_panel.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(
-            self.status_panel,
-            text="Panel de claridad",
-            font=("Segoe UI", 18, "bold"),
-            text_color=TEXT_MAIN,
-        ).grid(row=0, column=0, padx=18, pady=(18, 4), sticky="w")
 
         self.status_description = ctk.CTkLabel(
             self.status_panel,
-            text="Las cifras principales, el estado actual y la guia rapida estan visibles siempre.",
-            font=("Segoe UI", 12),
-            text_color=TEXT_MUTED,
-            wraplength=270,
-            justify="left",
+            text="Estado",
+            font=("Segoe UI", 14, "bold"),
+            text_color=TEXT_MAIN,
+            wraplength=260,
         )
-        self.status_description.grid(row=1, column=0, padx=18, pady=(0, 14), sticky="w")
+        self.status_description.grid(row=0, column=0, padx=14, pady=(14, 8), sticky="w")
 
         self.status_card = ctk.CTkFrame(
             self.status_panel,
             fg_color=INPUT_BG,
             border_color="#E2D6C8",
             border_width=1,
-            corner_radius=18,
+            corner_radius=14,
         )
-        self.status_card.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 12))
+        self.status_card.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 8))
         ctk.CTkLabel(
             self.status_card,
             text="ESTADO ACTUAL",
-            font=("Segoe UI", 10, "bold"),
+            font=("Segoe UI", 9, "bold"),
             text_color="#7A7168",
-        ).pack(anchor="w", padx=14, pady=(14, 4))
+        ).pack(anchor="w", padx=12, pady=(10, 2))
         self.lbl_status = ctk.CTkLabel(
             self.status_card,
             text="Esperando inicio",
-            font=("Segoe UI", 15, "bold"),
+            font=("Segoe UI", 13, "bold"),
             text_color=TEXT_MAIN,
             justify="left",
-            wraplength=260,
+            wraplength=220,
         )
-        self.lbl_status.pack(anchor="w", padx=14, pady=(0, 14))
+        self.lbl_status.pack(anchor="w", padx=12, pady=(0, 10))
 
         self.warning_frame = ctk.CTkFrame(
             self.status_panel,
             fg_color=SURFACE_SOFT,
             border_color="#E2D6C8",
             border_width=1,
-            corner_radius=18,
+            corner_radius=14,
         )
-        self.warning_frame.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 18))
+        self.warning_frame.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 14))
         ctk.CTkLabel(
             self.warning_frame,
             text="GUIA RAPIDA",
-            font=("Segoe UI", 10, "bold"),
+            font=("Segoe UI", 9, "bold"),
             text_color="#7A7168",
-        ).pack(anchor="w", padx=14, pady=(14, 4))
+        ).pack(anchor="w", padx=12, pady=(10, 2))
 
         instrucciones = (
-            "1. Abre el navegador desde el panel principal.\n"
-            "2. Inicia sesion y deja visible la tabla en 100 registros.\n"
-            "3. Ejecuta la descarga y vigila el log en vivo.\n"
-            "4. Usa Pausar o Reintentar si hace falta."
+            "1. Abre el navegador.\n"
+            "2. Inicia sesion y pon la tabla en 100.\n"
+            "3. Ejecuta la descarga.\n"
+            "4. Usa Pausar o Reintentar si falta."
         )
         self.lbl_warning = ctk.CTkLabel(
             self.warning_frame,
             text=instrucciones,
             justify="left",
-            font=("Segoe UI", 12),
+            font=("Segoe UI", 11),
             text_color="#5E564D",
-            wraplength=286,
+            wraplength=220,
         )
-        self.lbl_warning.pack(padx=14, pady=(0, 14), anchor="w")
+        self.lbl_warning.pack(padx=12, pady=(0, 10), anchor="w")
 
     def _build_log_modern(self):
         self.log_frame = ctk.CTkFrame(
             self.main_frame,
-            corner_radius=22,
+            corner_radius=18,
             fg_color="#162220",
             border_color="#2A3F3D",
             border_width=1,
         )
-        self.log_frame.grid(row=2, column=0, sticky="nsew", padx=22, pady=(0, 12))
+        self.log_frame.grid(row=2, column=0, sticky="nsew", padx=18, pady=(0, 8))
         self.log_frame.grid_rowconfigure(1, weight=1)
         self.log_frame.grid_columnconfigure(0, weight=1)
 
@@ -3959,22 +4076,15 @@ try {{
             corner_radius=0,
             border_width=0,
         )
-        self.log_header.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 8))
+        self.log_header.grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 4))
         self.log_header.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             self.log_header,
             text="Actividad en vivo",
-            font=("Segoe UI", 16, "bold"),
+            font=("Segoe UI", 13, "bold"),
             text_color="#FFF8EF",
         ).grid(row=0, column=0, sticky="w")
-
-        ctk.CTkLabel(
-            self.log_header,
-            text="Cada accion del sistema aparece aqui en tiempo real.",
-            font=("Segoe UI", 11),
-            text_color="#91ACA8",
-        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
 
         self.log_area = ctk.CTkTextbox(
             self.log_frame,
@@ -3984,9 +4094,9 @@ try {{
             text_color="#E8F0EE",
             border_color=LOG_BORDER,
             border_width=1,
-            corner_radius=16,
+            corner_radius=12,
         )
-        self.log_area.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 16))
+        self.log_area.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 12))
 
     def _build_footer_modern(self):
         self.footer_frame = ctk.CTkFrame(self.main_frame, height=24, fg_color="transparent")
@@ -4030,21 +4140,29 @@ try {{
         except Exception:
             return
 
-        compact = main_width < 930
-        compressed_height = window_height < 790
+        compact = main_width < 820
+        compressed_height = window_height < 700
         if self._compact_layout != compact:
             if compact:
-                self.status_panel.grid_configure(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
-                self.progress_shell.grid_configure(row=0, column=0, columnspan=2, padx=18, pady=(0, 12), sticky="ew")
-                self.action_subframe.grid_configure(row=1, column=0, columnspan=2, padx=18, pady=(0, 18), sticky="ew")
+                # Stack vertically
+                self.bottom_row.grid_columnconfigure(0, weight=1)
+                self.bottom_row.grid_columnconfigure(1, weight=1)
+                self.status_panel.grid_configure(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+                self.controls_frame.grid_configure(row=0, column=0, columnspan=2, padx=0)
+                self.progress_shell.grid_configure(row=0, column=0, columnspan=2, padx=14, pady=(4, 8), sticky="ew")
+                self.action_subframe.grid_configure(row=1, column=0, columnspan=2, padx=14, pady=(0, 14), sticky="ew")
                 self.console_frame.grid_columnconfigure(0, weight=1)
                 self.console_frame.grid_columnconfigure(1, weight=1)
             else:
-                self.status_panel.grid_configure(row=1, column=1, columnspan=1, sticky="nsew", pady=0)
-                self.progress_shell.grid_configure(row=0, column=0, columnspan=1, padx=(18, 10), pady=(0, 18), sticky="nsew")
-                self.action_subframe.grid_configure(row=0, column=1, columnspan=1, padx=(10, 18), pady=(0, 18), sticky="nsew")
-                self.console_frame.grid_columnconfigure(0, weight=4)
-                self.console_frame.grid_columnconfigure(1, weight=5)
+                # Side-by-side
+                self.bottom_row.grid_columnconfigure(0, weight=3)
+                self.bottom_row.grid_columnconfigure(1, weight=2)
+                self.status_panel.grid_configure(row=0, column=1, columnspan=1, sticky="nsew", pady=0)
+                self.controls_frame.grid_configure(row=0, column=0, columnspan=1, padx=(0, 8))
+                self.progress_shell.grid_configure(row=0, column=0, columnspan=1, padx=(14, 6), pady=(4, 14), sticky="nsew")
+                self.action_subframe.grid_configure(row=0, column=1, columnspan=1, padx=(6, 14), pady=(4, 14), sticky="nsew")
+                self.console_frame.grid_columnconfigure(0, weight=2)
+                self.console_frame.grid_columnconfigure(1, weight=3)
 
             self._compact_layout = compact
 
@@ -4058,26 +4176,21 @@ try {{
                     wraplength = min(maximum, wraplength)
                 return wraplength
 
-            sidebar_wrap = wrap_for(self.sidebar_frame, 54, 170, 194, 220)
-            hero_wrap = wrap_for(self.hero_frame, 360 if not compact else 110, 340, 520, 660)
-            header_wrap = wrap_for(self.header_frame, 60, 280, 420, 680)
-            controls_wrap = wrap_for(self.controls_frame, 60, 340, 560, 760)
-            action_wrap = wrap_for(self.action_subframe, 18, 240, 320, 520)
-            status_wrap = wrap_for(self.status_panel, 42, 220, 280, 560)
-            status_value_wrap = wrap_for(self.status_card, 36, 220, 250, 520)
-            warning_wrap = wrap_for(self.warning_frame, 36, 220, 286, 560)
+            header_wrap = wrap_for(self.header_frame, 40, 200, 360, 500)
+            controls_wrap = wrap_for(self.controls_frame, 40, 200, 400, 600)
+            action_wrap = wrap_for(self.action_subframe, 18, 180, 280, 400)
+            status_wrap = wrap_for(self.status_panel, 32, 180, 240, 400)
+            status_value_wrap = wrap_for(self.status_card, 28, 160, 210, 380)
+            warning_wrap = wrap_for(self.warning_frame, 28, 160, 210, 380)
 
-            self.sidebar_description.configure(wraplength=sidebar_wrap)
-            self.sidebar_support_text.configure(wraplength=sidebar_wrap)
-            self.sidebar_hint.configure(wraplength=sidebar_wrap)
+            self.sidebar_hint.configure(wraplength=180)
             self.header_description.configure(wraplength=header_wrap)
             self.controls_description.configure(wraplength=controls_wrap)
             self.action_description.configure(wraplength=action_wrap)
             self.status_description.configure(wraplength=status_wrap)
             self.lbl_status.configure(wraplength=status_value_wrap)
             self.lbl_warning.configure(wraplength=warning_wrap)
-            self.lbl_subtitle.configure(wraplength=hero_wrap)
-            self.footer_note.configure(wraplength=340 if compressed_height else 420, justify="right")
+            self.footer_note.configure(wraplength=300 if compressed_height else 400, justify="right")
         except Exception:
             pass
 
@@ -4144,8 +4257,8 @@ try {{
         if status_text is not None:
             self.status_text = status_text
 
-        self.lbl_success.configure(text=f"{self.stats['success']}\narchivos")
-        self.lbl_error.configure(text=f"{self.stats['error']}\nalertas")
+        self.lbl_success.configure(text=str(self.stats['success']))
+        self.lbl_error.configure(text=str(self.stats['error']))
         self.lbl_status.configure(text=self.status_text)
 
         chip_text = "LISTO"

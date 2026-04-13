@@ -3,6 +3,7 @@ from PyInstaller.utils.hooks import collect_data_files
 
 datas = []
 datas += collect_data_files('customtkinter')
+datas += [('logo.ico', '.')]
 
 
 a = Analysis(
@@ -38,6 +39,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='logo.ico',
 )
 
 coll = COLLECT(
