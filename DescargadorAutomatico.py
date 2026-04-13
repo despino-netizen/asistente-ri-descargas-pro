@@ -60,7 +60,7 @@ CONFIG_FILE = os.path.join(APP_DATA_DIR, "config_descargas.json")
 LOG_FILE = os.path.join(APP_DATA_DIR, "historial_actividad.txt")
 DEFAULT_DOWNLOAD_DIR = _get_default_download_dir()
 APP_NAME = "Asistente RI Descargas Pro"
-APP_VERSION = "3.3.0"
+APP_VERSION = "3.3.1"
 APP_VERSION_LABEL = f"V{APP_VERSION}"
 DEFAULT_EXE_NAME = "AsistenteRIDescargasPro.exe"
 GITHUB_RELEASE_REPOSITORY = "despino-netizen/asistente-ri-descargas-pro"
@@ -126,6 +126,8 @@ class GobiernoPDFDownloader(ctk.CTk):
         self._chip_mode = "idle"
         self._chip_pulse_tick = 0
         self._accent_tick = 0
+        self._resize_after_id = None
+        self._compact_layout = None
 
         self._setup_ui()
         self._run_intro_reveal()
@@ -134,6 +136,8 @@ class GobiernoPDFDownloader(ctk.CTk):
         
         # Iniciar loop de logs
         self.after(100, self._process_log_queue)
+        self.bind("<Configure>", self._handle_window_resize)
+        self.after(180, self._apply_responsive_layout)
         self.after(1800, self.start_update_check_thread)
         
         # Cierre seguro
@@ -2713,7 +2717,7 @@ Remove-Item -LiteralPath $PSCommandPath -Force
     def _build_sidebar_modern(self):
         self.sidebar_frame = ctk.CTkFrame(
             self,
-            width=238,
+            width=252,
             corner_radius=0,
             fg_color="#173835",
             border_width=0,
@@ -2726,7 +2730,7 @@ Remove-Item -LiteralPath $PSCommandPath -Force
             self.sidebar_frame,
             fg_color="#204A46",
             corner_radius=0,
-            height=164,
+            height=186,
         )
         self.sidebar_brand.grid(row=0, column=0, sticky="ew")
         self.sidebar_brand.grid_propagate(False)
@@ -2747,14 +2751,15 @@ Remove-Item -LiteralPath $PSCommandPath -Force
         )
         self.lbl_sidebar_title.pack(anchor="w", padx=18)
 
-        ctk.CTkLabel(
+        self.sidebar_description = ctk.CTkLabel(
             self.sidebar_brand,
             text="Interfaz clara, seguimiento en vivo y menos pasos para cada usuario.",
-            wraplength=180,
+            wraplength=194,
             justify="left",
             font=("Segoe UI", 12),
             text_color="#C9D7D4",
-        ).pack(anchor="w", padx=18, pady=(8, 0))
+        )
+        self.sidebar_description.pack(anchor="w", padx=18, pady=(8, 0))
 
         self.nav_dashboard = ctk.CTkButton(
             self.sidebar_frame,
@@ -2813,21 +2818,22 @@ Remove-Item -LiteralPath $PSCommandPath -Force
             text_color="#3E3A35",
         ).pack(anchor="w", padx=14, pady=(14, 4))
 
-        ctk.CTkLabel(
+        self.sidebar_support_text = ctk.CTkLabel(
             self.sidebar_support,
             text="Abre el portal, inicia sesion, coloca la tabla en 100 registros y ejecuta la descarga.",
-            wraplength=178,
+            wraplength=194,
             justify="left",
             font=("Segoe UI", 11),
             text_color="#5D564F",
-        ).pack(anchor="w", padx=14, pady=(0, 14))
+        )
+        self.sidebar_support_text.pack(anchor="w", padx=14, pady=(0, 14))
 
         self.sidebar_hint = ctk.CTkLabel(
             self.sidebar_frame,
             text="Pensado para verse simple desde el primer vistazo.",
             font=("Segoe UI", 10, "bold"),
             text_color="#AFC0BC",
-            wraplength=180,
+            wraplength=196,
             justify="left",
         )
         self.sidebar_hint.grid(row=6, column=0, padx=16, pady=(10, 16), sticky="sw")
@@ -2883,7 +2889,7 @@ Remove-Item -LiteralPath $PSCommandPath -Force
         self.lbl_title = ctk.CTkLabel(
             self.hero_frame,
             text="Centro de descargas automaticas",
-            font=("Bahnschrift SemiBold", 35),
+            font=("Bahnschrift SemiBold", 32),
             text_color=TEXT_MAIN,
         )
         self.lbl_title.grid(row=0, column=0, padx=24, pady=(22, 6), sticky="w")
@@ -2891,7 +2897,7 @@ Remove-Item -LiteralPath $PSCommandPath -Force
         self.lbl_subtitle = ctk.CTkLabel(
             self.hero_frame,
             text="La carpeta se guarda automaticamente y se recuerda al volver a abrir.",
-            wraplength=650,
+            wraplength=540,
             justify="left",
             font=("Segoe UI", 13),
             text_color=TEXT_MUTED,
@@ -2988,14 +2994,15 @@ Remove-Item -LiteralPath $PSCommandPath -Force
             text_color=TEXT_MAIN,
         ).grid(row=0, column=0, padx=20, pady=(18, 6), sticky="w")
 
-        ctk.CTkLabel(
+        self.header_description = ctk.CTkLabel(
             self.header_frame,
             text="Cada ejecucion crea su propia carpeta de trabajo para mantener todo ordenado.",
             font=("Segoe UI", 12),
             text_color=TEXT_MUTED,
-            wraplength=540,
+            wraplength=460,
             justify="left",
-        ).grid(row=1, column=0, columnspan=2, padx=20, pady=(0, 12), sticky="w")
+        )
+        self.header_description.grid(row=1, column=0, columnspan=2, padx=20, pady=(0, 12), sticky="w")
 
         self.entry_dir = ctk.CTkEntry(
             self.header_frame,
@@ -3042,14 +3049,15 @@ Remove-Item -LiteralPath $PSCommandPath -Force
             text_color=TEXT_MAIN,
         ).grid(row=0, column=0, columnspan=2, padx=20, pady=(18, 4), sticky="w")
 
-        ctk.CTkLabel(
+        self.controls_description = ctk.CTkLabel(
             self.controls_frame,
             text="Todo esta organizado para que una persona entienda donde empieza, como avanza y que hacer si algo falla.",
             font=("Segoe UI", 12),
             text_color=TEXT_MUTED,
-            wraplength=720,
+            wraplength=620,
             justify="left",
-        ).grid(row=1, column=0, columnspan=2, padx=20, pady=(0, 14), sticky="w")
+        )
+        self.controls_description.grid(row=1, column=0, columnspan=2, padx=20, pady=(0, 14), sticky="w")
 
         self.console_frame = ctk.CTkFrame(self.controls_frame, fg_color="transparent")
         self.console_frame.grid(row=2, column=0, columnspan=2, sticky="nsew")
@@ -3133,14 +3141,15 @@ Remove-Item -LiteralPath $PSCommandPath -Force
             text_color=TEXT_MAIN,
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(4, 4))
 
-        ctk.CTkLabel(
+        self.action_description = ctk.CTkLabel(
             self.action_subframe,
             text="Sigue el orden natural del flujo: abrir portal, iniciar sesion y comenzar el procesamiento.",
             font=("Segoe UI", 12),
             text_color=TEXT_MUTED,
-            wraplength=420,
+            wraplength=300,
             justify="left",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 14))
+        )
+        self.action_description.grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 14))
 
         btn_font = ("Segoe UI", 13, "bold")
         btn_height = 44
@@ -3281,14 +3290,15 @@ Remove-Item -LiteralPath $PSCommandPath -Force
             text_color=TEXT_MAIN,
         ).grid(row=0, column=0, padx=18, pady=(18, 4), sticky="w")
 
-        ctk.CTkLabel(
+        self.status_description = ctk.CTkLabel(
             self.status_panel,
             text="Las cifras principales, el estado actual y la guia rapida estan visibles siempre.",
             font=("Segoe UI", 12),
             text_color=TEXT_MUTED,
-            wraplength=360,
+            wraplength=270,
             justify="left",
-        ).grid(row=1, column=0, padx=18, pady=(0, 14), sticky="w")
+        )
+        self.status_description.grid(row=1, column=0, padx=18, pady=(0, 14), sticky="w")
 
         self.status_card = ctk.CTkFrame(
             self.status_panel,
@@ -3310,7 +3320,7 @@ Remove-Item -LiteralPath $PSCommandPath -Force
             font=("Segoe UI", 15, "bold"),
             text_color=TEXT_MAIN,
             justify="left",
-            wraplength=320,
+            wraplength=260,
         )
         self.lbl_status.pack(anchor="w", padx=14, pady=(0, 14))
 
@@ -3341,7 +3351,7 @@ Remove-Item -LiteralPath $PSCommandPath -Force
             justify="left",
             font=("Segoe UI", 12),
             text_color="#5E564D",
-            wraplength=340,
+            wraplength=286,
         )
         self.lbl_warning.pack(padx=14, pady=(0, 14), anchor="w")
 
@@ -3413,6 +3423,55 @@ Remove-Item -LiteralPath $PSCommandPath -Force
             text_color=TEXT_MUTED,
         )
         self.footer_note.grid(row=0, column=1, sticky="e")
+
+    def _handle_window_resize(self, event=None):
+        if event is not None and event.widget is not self:
+            return
+
+        if self._resize_after_id:
+            try:
+                self.after_cancel(self._resize_after_id)
+            except Exception:
+                pass
+
+        self._resize_after_id = self.after(90, self._apply_responsive_layout)
+
+    def _apply_responsive_layout(self):
+        self._resize_after_id = None
+        try:
+            main_width = max(self.main_frame.winfo_width(), self.winfo_width() - self.sidebar_frame.winfo_width())
+        except Exception:
+            return
+
+        compact = main_width < 1080
+        if self._compact_layout != compact:
+            if compact:
+                self.status_panel.grid_configure(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+                self.progress_shell.grid_configure(row=0, column=0, columnspan=2, padx=18, pady=(0, 12), sticky="ew")
+                self.action_subframe.grid_configure(row=1, column=0, columnspan=2, padx=18, pady=(0, 18), sticky="ew")
+                self.console_frame.grid_columnconfigure(0, weight=1)
+                self.console_frame.grid_columnconfigure(1, weight=1)
+            else:
+                self.status_panel.grid_configure(row=1, column=1, columnspan=1, sticky="nsew", pady=0)
+                self.progress_shell.grid_configure(row=0, column=0, columnspan=1, padx=(18, 10), pady=(0, 18), sticky="nsew")
+                self.action_subframe.grid_configure(row=0, column=1, columnspan=1, padx=(10, 18), pady=(0, 18), sticky="nsew")
+                self.console_frame.grid_columnconfigure(0, weight=4)
+                self.console_frame.grid_columnconfigure(1, weight=5)
+
+            self._compact_layout = compact
+
+        try:
+            self.sidebar_description.configure(wraplength=194)
+            self.sidebar_support_text.configure(wraplength=194)
+            self.header_description.configure(wraplength=420 if compact else 460)
+            self.controls_description.configure(wraplength=540 if compact else 620)
+            self.action_description.configure(wraplength=460 if compact else 300)
+            self.status_description.configure(wraplength=540 if compact else 270)
+            self.lbl_status.configure(wraplength=520 if compact else 260)
+            self.lbl_warning.configure(wraplength=540 if compact else 286)
+            self.lbl_subtitle.configure(wraplength=480 if compact else 540)
+        except Exception:
+            pass
 
     def _run_intro_reveal(self):
         reveal_sequence = [
