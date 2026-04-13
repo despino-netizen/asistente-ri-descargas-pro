@@ -1,0 +1,2650 @@
+﻿import customtkinter as ctk
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import threading
+import queue
+import time
+import os
+import sys
+import math
+import datetime
+import json
+import re
+import uuid
+import winsound
+import subprocess
+import tempfile
+import urllib.request
+import urllib.error
+
+# InstalaciÃ³n automÃ¡tica del driver
+from webdriver_manager.chrome import ChromeDriverManager
+
+# Selenium Imports
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
+
+# ConfiguraciÃ³n Global de Estilo
+ctk.set_appearance_mode("Light")
+ctk.set_default_color_theme("blue")
+
+def _get_app_base_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+APP_BASE_DIR = _get_app_base_dir()
+CONFIG_FILE = os.path.join(APP_BASE_DIR, "config_descargas.json")
+DEFAULT_DOWNLOAD_DIR = os.path.join(APP_BASE_DIR, "Descargas_PDF")
+APP_NAME = "Asistente RI Descargas Pro"
+APP_VERSION = "3.2.0"
+APP_VERSION_LABEL = f"V{APP_VERSION}"
+DEFAULT_EXE_NAME = "AsistenteRIDescargasPro.exe"
+GITHUB_RELEASE_REPOSITORY = ""
+GITHUB_RELEASE_ASSET_NAME = DEFAULT_EXE_NAME
+GITHUB_API_VERSION = "2026-03-10"
+
+# Theme visual
+APP_BG = "#EEF3FB"
+CARD_BG = "#FFFFFF"
+CARD_BORDER = "#D7E0EC"
+SURFACE_SOFT = "#E4ECFB"
+SURFACE_SOFT_2 = "#DDE7FA"
+PRIMARY = "#0A4DA3"
+PRIMARY_HOVER = "#083D82"
+SUCCESS = "#0E8C4A"
+SUCCESS_HOVER = "#0B6E3A"
+WARN = "#3E7FD1"
+WARN_HOVER = "#2F68AF"
+DANGER = "#B42318"
+DANGER_HOVER = "#8E1C12"
+TEXT_MAIN = "#13233A"
+TEXT_MUTED = "#5A6B85"
+INPUT_BG = "#F7F9FD"
+LOG_BG = "#0B1322"
+LOG_BORDER = "#223754"
+
+
+class GobiernoPDFDownloader(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+
+        # --- ConfiguraciÃ³n de la Ventana ---
+        self.title(f"{APP_NAME} | {APP_VERSION_LABEL}")
+        self.geometry("1240x840")
+        self.minsize(980, 680)
+        self.configure(fg_color=APP_BG)
+        
+        # Variables de control
+        self.driver = None
+        self.is_running = False
+        self.is_paused = False
+        self.log_queue = queue.Queue()
+        self.stats = {"success": 0, "error": 0}
+        self.status_text = "Esperando inicio"
+        self.failed_rows = []
+        self.run_download_dir = None
+        self.browser_download_dir = None
+        self.update_check_in_progress = False
+        self.update_prompted_version = ""
+        
+        # Cargar configuraciÃ³n guardada (Memoria)
+        self.saved_config = self.load_config()
+        default_dir = self._normalize_folder_path(self.saved_config.get("last_folder", DEFAULT_DOWNLOAD_DIR))
+        self._initial_download_dir = default_dir
+        
+        self.download_dir = tk.StringVar(value=default_dir)
+
+        # ConfiguraciÃ³n de Grid Principal
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+
+        # Estado de animaciones de interfaz
+        self._chip_mode = "idle"
+        self._chip_pulse_tick = 0
+        self._accent_tick = 0
+
+        self._setup_ui()
+        self._run_intro_reveal()
+        self._animate_status_chip()
+        self._animate_background_accents()
+        
+        # Iniciar loop de logs
+        self.after(100, self._process_log_queue)
+        self.after(1800, self.start_update_check_thread)
+        
+        # Cierre seguro
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def load_config(self):
+        """Carga la configuraciÃ³n desde un archivo JSON local."""
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                if not isinstance(config, dict):
+                    return {}
+                config["last_folder"] = self._normalize_folder_path(config.get("last_folder", DEFAULT_DOWNLOAD_DIR))
+                return config
+            except Exception:
+                return {}
+        return {}
+
+    def _normalize_folder_path(self, folder_path):
+        folder_path = str(folder_path or "").strip()
+        if not folder_path:
+            folder_path = DEFAULT_DOWNLOAD_DIR
+        folder_path = os.path.expandvars(os.path.expanduser(folder_path))
+        return os.path.abspath(folder_path)
+
+    def save_config(self):
+        """Guarda la configuraciÃ³n actual."""
+        current_folder = self._normalize_folder_path(self.download_dir.get())
+        self.download_dir.set(current_folder)
+        config = dict(self.saved_config) if isinstance(self.saved_config, dict) else {}
+        config["last_folder"] = current_folder
+        try:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            self.saved_config = dict(config)
+        except Exception:
+            pass
+
+    def _set_download_base_dir(self, folder_path, persist=True, apply_to_browser=False):
+        normalized_dir = self._normalize_folder_path(folder_path)
+        os.makedirs(normalized_dir, exist_ok=True)
+        self.run_download_dir = None
+        self.download_dir.set(normalized_dir)
+
+        if persist:
+            self.save_config()
+
+        browser_updated = False
+        if apply_to_browser and self.driver and not self.is_running:
+            browser_updated = self._apply_runtime_download_dir(normalized_dir)
+
+        return normalized_dir, browser_updated
+
+    def _wait_if_paused(self):
+        while self.is_paused:
+            if not self.is_running:
+                return False
+            time.sleep(0.2)
+        return self.is_running
+
+    def _wait_if_paused_with_elapsed(self):
+        paused_elapsed = 0.0
+        while self.is_paused:
+            if not self.is_running:
+                return False, paused_elapsed
+            tick_start = time.monotonic()
+            time.sleep(0.2)
+            paused_elapsed += time.monotonic() - tick_start
+        return self.is_running, paused_elapsed
+
+    def _sleep_with_pause(self, seconds, step=0.1):
+        end_time = time.monotonic() + max(0.0, float(seconds))
+        while time.monotonic() < end_time:
+            if not self._wait_if_paused():
+                return False
+            remaining = end_time - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(step, remaining))
+        return self.is_running
+
+    def _sleep_with_pause_and_elapsed(self, seconds, step=0.1):
+        paused_elapsed = 0.0
+        end_time = time.monotonic() + max(0.0, float(seconds))
+        while time.monotonic() < end_time:
+            can_continue, paused_delta = self._wait_if_paused_with_elapsed()
+            paused_elapsed += paused_delta
+            if not can_continue:
+                return False, paused_elapsed
+            remaining = end_time - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(step, remaining))
+        return self.is_running, paused_elapsed
+
+    def _should_persist_config_on_close(self):
+        current_dir = str(self.download_dir.get() or "").strip()
+        if not current_dir:
+            return False
+
+        saved_dir = str(self.saved_config.get("last_folder", "") or "").strip()
+        if saved_dir:
+            return current_dir != saved_dir
+
+        # Sin config previa: no crear archivo si no hubo cambio real.
+        return current_dir != str(self._initial_download_dir or "").strip()
+
+    def _setup_ui(self):
+        # Layout general: sidebar izquierda + contenido principal.
+        self.grid_columnconfigure(0, weight=0)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self.configure(fg_color=APP_BG)
+
+        # ================= SIDEBAR =================
+        self.sidebar_frame = ctk.CTkFrame(
+            self,
+            width=170,
+            corner_radius=0,
+            fg_color="#F4F7FC",
+            border_width=1,
+            border_color="#D9E3F1",
+        )
+        self.sidebar_frame.grid(row=0, column=0, sticky="ns")
+        self.sidebar_frame.grid_propagate(False)
+        self.sidebar_frame.grid_rowconfigure(6, weight=1)
+
+        self.sidebar_brand = ctk.CTkFrame(
+            self.sidebar_frame,
+            fg_color="#123B73",
+            corner_radius=0,
+            height=86,
+        )
+        self.sidebar_brand.grid(row=0, column=0, sticky="ew")
+        self.sidebar_brand.grid_propagate(False)
+
+        self.lbl_sidebar_title = ctk.CTkLabel(
+            self.sidebar_brand,
+            text="Asistente RI\nDescargas Pro",
+            font=("Segoe UI", 21, "bold"),
+            text_color="#F2F7FF",
+            justify="left",
+        )
+        self.lbl_sidebar_title.pack(anchor="w", padx=14, pady=14)
+
+        self.nav_dashboard = ctk.CTkButton(
+            self.sidebar_frame,
+            text="Dashboard",
+            height=36,
+            fg_color="#E8F0FB",
+            hover_color="#D8E7FA",
+            text_color="#2F67B9",
+            corner_radius=8,
+            font=("Segoe UI", 14, "bold"),
+        )
+        self.nav_dashboard.grid(row=1, column=0, sticky="ew", padx=10, pady=(12, 6))
+
+        self.nav_history = ctk.CTkButton(
+            self.sidebar_frame,
+            text="History",
+            height=34,
+            fg_color="transparent",
+            hover_color="#EAF1FC",
+            text_color="#5F6F87",
+            corner_radius=8,
+            font=("Segoe UI", 13, "bold"),
+            anchor="w",
+        )
+        self.nav_history.grid(row=2, column=0, sticky="ew", padx=10, pady=2)
+
+        self.nav_settings = ctk.CTkButton(
+            self.sidebar_frame,
+            text="Settings",
+            height=34,
+            fg_color="transparent",
+            hover_color="#EAF1FC",
+            text_color="#5F6F87",
+            corner_radius=8,
+            font=("Segoe UI", 13, "bold"),
+            anchor="w",
+        )
+        self.nav_settings.grid(row=3, column=0, sticky="ew", padx=10, pady=2)
+
+        self.sidebar_hint = ctk.CTkLabel(
+            self.sidebar_frame,
+            text="Panel principal",
+            font=("Segoe UI", 10, "bold"),
+            text_color="#93A2B8",
+        )
+        self.sidebar_hint.grid(row=7, column=0, padx=10, pady=(6, 10), sticky="w")
+
+        # ================= CONTENIDO PRINCIPAL =================
+        self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_frame.grid(row=0, column=1, sticky="nsew")
+        self.main_frame.grid_columnconfigure(0, weight=1)
+        self.main_frame.grid_rowconfigure(2, weight=1)
+
+        # Fondo con orbes suaves para evitar plano uniforme.
+        self.bg_orb_left = ctk.CTkFrame(
+            self.main_frame,
+            width=280,
+            height=280,
+            corner_radius=140,
+            fg_color="#DCE8FA",
+        )
+        self.bg_orb_left.place(x=-130, y=270)
+        self.bg_orb_left.lower()
+
+        self.bg_orb_right = ctk.CTkFrame(
+            self.main_frame,
+            width=340,
+            height=340,
+            corner_radius=170,
+            fg_color="#E7EEFB",
+        )
+        self.bg_orb_right.place(relx=1.0, x=-80, y=520, anchor="ne")
+        self.bg_orb_right.lower()
+
+        # ================= CARD: PATH =================
+        self.header_frame = ctk.CTkFrame(
+            self.main_frame,
+            corner_radius=10,
+            fg_color=CARD_BG,
+            border_color=CARD_BORDER,
+            border_width=1,
+        )
+        self.header_frame.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 8))
+        self.header_frame.grid_columnconfigure(0, weight=1)
+        self.header_frame.grid_columnconfigure(1, weight=0)
+
+        self.lbl_title = ctk.CTkLabel(
+            self.header_frame,
+            text="Path Configuration",
+            font=("Segoe UI", 33, "bold"),
+            text_color=TEXT_MAIN,
+        )
+        self.lbl_title.grid(row=0, column=0, columnspan=2, padx=16, pady=(12, 4), sticky="w")
+
+        self.lbl_subtitle = ctk.CTkLabel(
+            self.header_frame,
+            text="Carpeta destino:",
+            font=("Segoe UI", 13, "bold"),
+            text_color=TEXT_MAIN,
+        )
+        self.lbl_subtitle.grid(row=1, column=0, columnspan=2, padx=16, pady=(0, 6), sticky="w")
+
+        # Placeholder para conservar referencia heredada.
+        self.lbl_dir = ctk.CTkLabel(
+            self.header_frame,
+            text="",
+            font=("Segoe UI", 1),
+            text_color=CARD_BG,
+        )
+        self.lbl_dir.grid(row=1, column=1, padx=0, pady=0, sticky="e")
+
+        self.entry_dir = ctk.CTkEntry(
+            self.header_frame,
+            textvariable=self.download_dir,
+            height=38,
+            fg_color=INPUT_BG,
+            border_color="#CDD9EA",
+            border_width=1,
+            text_color="#223249",
+            font=("Consolas", 12),
+            corner_radius=6,
+        )
+        self.entry_dir.grid(row=2, column=0, padx=(16, 8), pady=(0, 12), sticky="ew")
+
+        self.btn_folder = ctk.CTkButton(
+            self.header_frame,
+            text="Cambiar",
+            command=self._select_folder,
+            width=92,
+            height=36,
+            fg_color="#3E7FD1",
+            hover_color="#2F68AF",
+            text_color="#FFFFFF",
+            corner_radius=8,
+            font=("Segoe UI", 13, "bold"),
+        )
+        self.btn_folder.grid(row=2, column=1, padx=(0, 14), pady=(0, 12), sticky="e")
+
+        self.header_activity = ctk.CTkProgressBar(
+            self.header_frame,
+            height=4,
+            corner_radius=999,
+            progress_color="#3E7FD1",
+            fg_color="#DCE6F5",
+        )
+        self.header_activity.grid(row=3, column=0, columnspan=2, sticky="ew", padx=16, pady=(0, 8))
+        self.header_activity.configure(mode="indeterminate")
+        self.header_activity.stop()
+
+        # ================= CARD: CONTROLES =================
+        self.controls_frame = ctk.CTkFrame(
+            self.main_frame,
+            fg_color=CARD_BG,
+            border_color=CARD_BORDER,
+            border_width=1,
+            corner_radius=10,
+        )
+        self.controls_frame.grid(row=1, column=0, sticky="ew", padx=16, pady=(4, 8))
+        self.controls_frame.grid_columnconfigure(0, weight=1)
+
+        self.metrics_row = ctk.CTkFrame(self.controls_frame, fg_color="transparent")
+        self.metrics_row.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 0))
+        self.metrics_row.grid_columnconfigure((0, 1, 2), weight=1)
+
+        self.console_frame = ctk.CTkFrame(self.controls_frame, fg_color="transparent")
+        self.console_frame.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
+        self.console_frame.grid_columnconfigure(0, weight=1)
+
+        self.progress_shell = ctk.CTkFrame(self.console_frame, fg_color="transparent")
+        self.progress_shell.grid(row=0, column=0, sticky="ew")
+        self.progress_shell.grid_columnconfigure(0, weight=1)
+
+        self.progress_ring_host = ctk.CTkFrame(
+            self.progress_shell,
+            fg_color="transparent",
+            corner_radius=0,
+        )
+        self.progress_ring_host.grid(row=0, column=0, pady=(4, 8))
+
+        self.progress_ring_canvas = tk.Canvas(
+            self.progress_ring_host,
+            width=220,
+            height=220,
+            bd=0,
+            highlightthickness=0,
+            bg=CARD_BG,
+        )
+        self.progress_ring_canvas.pack()
+        self.progress_ring_canvas.create_oval(20, 20, 200, 200, outline="#D5E1F2", width=16)
+        self.progress_ring_arc = self.progress_ring_canvas.create_arc(
+            20,
+            20,
+            200,
+            200,
+            start=90,
+            extent=0,
+            style="arc",
+            outline="#3E7FD1",
+            width=16,
+        )
+        self.progress_ring_canvas.create_text(
+            110,
+            86,
+            text="Descargando...",
+            fill="#5A6B85",
+            font=("Segoe UI", 11, "bold"),
+        )
+        self.progress_ring_text = self.progress_ring_canvas.create_text(
+            110,
+            124,
+            text="0%",
+            fill="#1D2B3E",
+            font=("Segoe UI", 22, "bold"),
+        )
+
+        self.action_subframe = ctk.CTkFrame(self.progress_shell, fg_color="transparent")
+        self.action_subframe.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 6))
+        self.action_subframe.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
+
+        btn_font = ("Segoe UI", 13, "bold")
+        btn_height = 36
+
+        self.btn_browser = ctk.CTkButton(
+            self.action_subframe,
+            text="Abrir navegador",
+            command=self.launch_browser,
+            height=btn_height,
+            corner_radius=7,
+            font=btn_font,
+            fg_color="#3E7FD1",
+            hover_color="#2F68AF",
+            text_color="#FFFFFF",
+        )
+        self.btn_browser.grid(row=0, column=0, padx=4, pady=6, sticky="ew")
+
+        self.btn_start = ctk.CTkButton(
+            self.action_subframe,
+            text="Empezar descarga",
+            command=self.start_scraping_thread,
+            state="disabled",
+            height=btn_height,
+            corner_radius=7,
+            font=btn_font,
+            fg_color="#3E7FD1",
+            hover_color="#2F68AF",
+            text_color="#FFFFFF",
+        )
+        self.btn_start.grid(row=0, column=1, padx=4, pady=6, sticky="ew")
+
+        self.btn_pause = ctk.CTkButton(
+            self.action_subframe,
+            text="Pausar",
+            command=self.toggle_pause,
+            state="disabled",
+            height=btn_height,
+            corner_radius=7,
+            font=btn_font,
+            fg_color="#3E7FD1",
+            hover_color="#2F68AF",
+            text_color="#FFFFFF",
+        )
+        self.btn_pause.grid(row=0, column=2, padx=4, pady=6, sticky="ew")
+
+        self.btn_cancel = ctk.CTkButton(
+            self.action_subframe,
+            text="Cancelar",
+            command=self.stop_process,
+            state="disabled",
+            height=btn_height,
+            corner_radius=7,
+            font=btn_font,
+            fg_color="#3E7FD1",
+            hover_color="#2F68AF",
+            text_color="#FFFFFF",
+        )
+        self.btn_cancel.grid(row=0, column=3, padx=4, pady=6, sticky="ew")
+
+        self.btn_retry_failed = ctk.CTkButton(
+            self.action_subframe,
+            text="Reintentar fallidos (0)",
+            command=self.retry_failed_rows_thread,
+            state="disabled",
+            height=btn_height,
+            corner_radius=7,
+            font=btn_font,
+            fg_color="#3E7FD1",
+            hover_color="#2F68AF",
+            text_color="#FFFFFF",
+        )
+        self.btn_retry_failed.grid(row=0, column=4, padx=4, pady=6, sticky="ew")
+
+        # Barra lineal para mantener la logica interna actual.
+        self.progress = ctk.CTkProgressBar(
+            self.progress_shell,
+            height=10,
+            corner_radius=999,
+            progress_color="#3E7FD1",
+            fg_color="#DCE6F5",
+        )
+        self.progress.set(0)
+        self.progress.grid(row=2, column=0, padx=10, pady=(2, 6), sticky="ew")
+
+        self.lbl_runtime_status = ctk.CTkLabel(
+            self.progress_shell,
+            text="LISTO",
+            font=("Segoe UI", 12, "bold"),
+            fg_color="#2D67B2",
+            corner_radius=999,
+            padx=12,
+            pady=4,
+            text_color="#FFFFFF",
+        )
+        self.lbl_runtime_status.grid(row=3, column=0, pady=(0, 8))
+
+        self.lbl_success = ctk.CTkLabel(
+            self.metrics_row,
+            text="Exitos: 0",
+            font=("Segoe UI", 13, "bold"),
+            text_color="#2A9B54",
+            fg_color="#EDF8F1",
+            corner_radius=8,
+            padx=8,
+            pady=6,
+        )
+        self.lbl_success.grid(row=0, column=0, padx=4, sticky="ew")
+
+        self.lbl_error = ctk.CTkLabel(
+            self.metrics_row,
+            text="Errores: 0",
+            font=("Segoe UI", 13, "bold"),
+            text_color="#C0392B",
+            fg_color="#FCEEEE",
+            corner_radius=8,
+            padx=8,
+            pady=6,
+        )
+        self.lbl_error.grid(row=0, column=1, padx=4, sticky="ew")
+
+        self.lbl_status = ctk.CTkLabel(
+            self.metrics_row,
+            text="Estado: Esperando inicio",
+            font=("Segoe UI", 13, "bold"),
+            text_color="#2F67B9",
+            fg_color="#EAF1FC",
+            corner_radius=8,
+            padx=8,
+            pady=6,
+            justify="left",
+        )
+        self.lbl_status.grid(row=0, column=2, padx=4, sticky="ew")
+
+        self.warning_frame = ctk.CTkFrame(
+            self.controls_frame,
+            fg_color="#F6FAFF",
+            border_color="#D8E4F2",
+            border_width=1,
+            corner_radius=8,
+        )
+        self.warning_frame.grid(row=2, column=0, padx=12, pady=(0, 10), sticky="ew")
+        instrucciones = (
+            "INSTRUCCIONES RAPIDAS: 1) Inicie sesion y ubique la tabla. "
+            "2) Coloque la tabla en 100 registros."
+        )
+        self.lbl_warning = ctk.CTkLabel(
+            self.warning_frame,
+            text=instrucciones,
+            justify="left",
+            font=("Segoe UI", 11, "bold"),
+            text_color="#4F627C",
+            wraplength=900,
+        )
+        self.lbl_warning.pack(pady=7, padx=10, anchor="w")
+
+        # ================= CARD: LOG =================
+        self.log_frame = ctk.CTkFrame(
+            self.main_frame,
+            corner_radius=10,
+            fg_color=CARD_BG,
+            border_color=CARD_BORDER,
+            border_width=1,
+        )
+        self.log_frame.grid(row=2, column=0, sticky="nsew", padx=16, pady=(6, 8))
+        self.log_frame.grid_rowconfigure(1, weight=1)
+        self.log_frame.grid_columnconfigure(0, weight=1)
+
+        self.log_header = ctk.CTkFrame(
+            self.log_frame,
+            fg_color="#3E7FD1",
+            corner_radius=8,
+            border_width=0,
+            height=34,
+        )
+        self.log_header.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 6))
+        self.log_header.grid_propagate(False)
+        ctk.CTkLabel(
+            self.log_header,
+            text="Live Log",
+            font=("Segoe UI", 13, "bold"),
+            text_color="#FFFFFF",
+        ).pack(anchor="w", padx=10, pady=6)
+
+        self.log_area = ctk.CTkTextbox(
+            self.log_frame,
+            font=("Consolas", 11),
+            state="disabled",
+            fg_color="#FFFFFF",
+            text_color="#1E2E44",
+            border_color="#D3DEEC",
+            border_width=1,
+        )
+        self.log_area.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+
+        # ================= FOOTER =================
+        self.footer_frame = ctk.CTkFrame(self.main_frame, height=24, fg_color="transparent")
+        self.footer_frame.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 8))
+        self.footer_frame.grid_columnconfigure(0, weight=1)
+        self.footer_frame.grid_columnconfigure(1, weight=0)
+        self.footer_frame.grid_columnconfigure(2, weight=0)
+
+        self.lbl_credits = ctk.CTkLabel(
+            self.footer_frame,
+            text="Desarrollado por Dariel Espino (809) 434-2700",
+            font=("Segoe UI", 10, "bold"),
+            text_color="#5A6B85",
+        )
+        self.lbl_credits.grid(row=0, column=0, sticky="w")
+
+        self.btn_update = ctk.CTkButton(
+            self.footer_frame,
+            text="Buscar actualización",
+            command=lambda: self.start_update_check_thread(manual=True),
+            width=146,
+            height=24,
+            fg_color="#EAF1FC",
+            hover_color="#D8E7FA",
+            text_color="#2F67B9",
+            corner_radius=999,
+            font=("Segoe UI", 10, "bold"),
+        )
+        self.btn_update.grid(row=0, column=1, padx=(0, 10), sticky="e")
+
+        self.lbl_version = ctk.CTkLabel(
+            self.footer_frame,
+            text=APP_VERSION_LABEL,
+            font=("Segoe UI", 10, "bold"),
+            text_color="#5A6B85",
+        )
+        self.lbl_version.grid(row=0, column=2, sticky="e")
+
+        self._refresh_stats_labels("Esperando inicio")
+        self._update_retry_button_state()
+        self.log("Bienvenido. Configuracion cargada correctamente.", "INFO", persist=False)
+        self._sync_progress_ring()
+
+    def _sync_progress_ring(self):
+        value = 0.0
+        try:
+            value = float(self.progress.get())
+        except Exception:
+            value = 0.0
+
+        value = max(0.0, min(1.0, value))
+        extent = -360 * value
+        percent = int(round(value * 100))
+
+        try:
+            self.progress_ring_canvas.itemconfigure(self.progress_ring_arc, extent=extent)
+            self.progress_ring_canvas.itemconfigure(self.progress_ring_text, text=f"{percent}%")
+        except Exception:
+            pass
+
+        self.after(140, self._sync_progress_ring)
+
+    # -------------------------------------------------------------------------
+    # FUNCIONES LÃ“GICAS
+    # -------------------------------------------------------------------------
+
+    def _run_intro_reveal(self):
+        reveal_sequence = [
+            self.header_frame,
+            self.controls_frame,
+            self.log_frame,
+            self.footer_frame,
+        ]
+        for widget in reveal_sequence:
+            widget.grid_remove()
+
+        for idx, widget in enumerate(reveal_sequence):
+            self.after(80 + (idx * 95), lambda w=widget: w.grid())
+
+    def _animate_background_accents(self):
+        self._accent_tick += 1
+        phase = self._accent_tick / 14.0
+
+        left_x = -130 + int(8 * math.sin(phase))
+        left_y = 270 + int(6 * math.cos(phase * 0.8))
+        self.bg_orb_left.place(x=left_x, y=left_y)
+
+        right_x = -80 + int(12 * math.cos(phase * 0.9))
+        right_y = 520 + int(10 * math.sin(phase))
+        self.bg_orb_right.place(relx=1.0, x=right_x, y=right_y, anchor="ne")
+
+        self.after(85, self._animate_background_accents)
+
+    def _animate_status_chip(self):
+        self._chip_pulse_tick += 1
+
+        if self._chip_mode == "running":
+            palette = ["#2E70C4", "#3E84D8", "#337ACF"]
+        elif self._chip_mode == "paused":
+            palette = ["#376CAF", "#4682CC", "#3C75BC"]
+        elif self._chip_mode == "error":
+            palette = ["#B84036", "#CF4E43", "#BF463C"]
+        elif self._chip_mode == "done":
+            palette = ["#278D4E", "#2FA65C"]
+        else:
+            palette = ["#2D67B2", "#3A79C7"]
+
+        color = palette[self._chip_pulse_tick % len(palette)]
+        try:
+            self.lbl_runtime_status.configure(fg_color=color)
+        except Exception:
+            pass
+
+        self.after(450, self._animate_status_chip)
+
+    def _refresh_stats_labels(self, status_text=None):
+        if status_text is not None:
+            self.status_text = status_text
+
+        self.lbl_success.configure(text=f"Exitos: {self.stats['success']}")
+        self.lbl_error.configure(text=f"Errores: {self.stats['error']}")
+        self.lbl_status.configure(text=f"Estado: {self.status_text}")
+
+        chip_text = "LISTO"
+        self._chip_mode = "idle"
+        if self.is_running and self.is_paused:
+            chip_text = "PAUSADO"
+            self._chip_mode = "paused"
+        elif self.is_running:
+            chip_text = "EN PROCESO"
+            self._chip_mode = "running"
+        elif self.stats["error"] > 0 and self.stats["success"] == 0:
+            chip_text = "CON ERRORES"
+            self._chip_mode = "error"
+        elif self.stats["success"] > 0:
+            chip_text = "COMPLETADO"
+            self._chip_mode = "done"
+
+        self.lbl_runtime_status.configure(text=chip_text)
+
+    def _show_info_threadsafe(self, title, message):
+        self.after(0, lambda t=title, m=message: messagebox.showinfo(t, m))
+
+    def _show_error_threadsafe(self, title, message):
+        self.after(0, lambda t=title, m=message: messagebox.showerror(t, m))
+
+    def _ask_yes_no_threadsafe(self, title, message):
+        response = {"value": False}
+        dialog_done = threading.Event()
+
+        def _ask():
+            try:
+                response["value"] = messagebox.askyesno(title, message)
+            finally:
+                dialog_done.set()
+
+        self.after(0, _ask)
+        dialog_done.wait()
+        return bool(response["value"])
+
+    def _set_update_button_state(self, checking):
+        def _apply():
+            try:
+                if not self.winfo_exists():
+                    return
+                self.btn_update.configure(
+                    state="disabled" if checking else "normal",
+                    text="Buscando..." if checking else "Buscar actualización",
+                )
+            except Exception:
+                pass
+
+        try:
+            self.after(0, _apply)
+        except Exception:
+            pass
+
+    def _normalize_version_tag(self, version_text):
+        version = str(version_text or "").strip()
+        return re.sub(r"^[Vv]\s*", "", version)
+
+    def _version_key(self, version_text):
+        normalized = self._normalize_version_tag(version_text)
+        parts = [int(part) for part in re.findall(r"\d+", normalized)]
+        return tuple(parts) if parts else (0,)
+
+    def _current_exe_path(self):
+        if not getattr(sys, "frozen", False):
+            return ""
+        return os.path.abspath(sys.executable)
+
+    def _expected_update_asset_name(self):
+        current_name = os.path.basename(self._current_exe_path())
+        candidates = [
+            current_name,
+            str(self.saved_config.get("github_asset_name", "") or "").strip(),
+            GITHUB_RELEASE_ASSET_NAME,
+            DEFAULT_EXE_NAME,
+        ]
+        for candidate in candidates:
+            candidate = str(candidate or "").strip()
+            if candidate:
+                return candidate
+        return DEFAULT_EXE_NAME
+
+    def _configured_github_repo(self):
+        repo = str(self.saved_config.get("github_repo", "") or "").strip().strip("/")
+        if repo:
+            return repo
+        return str(GITHUB_RELEASE_REPOSITORY or "").strip().strip("/")
+
+    def _powershell_literal(self, value):
+        return "'" + str(value).replace("'", "''") + "'"
+
+    def _choose_release_asset(self, assets):
+        if not isinstance(assets, list):
+            return None
+
+        preferred_names = []
+        for name in [
+            os.path.basename(self._current_exe_path()),
+            str(self.saved_config.get("github_asset_name", "") or "").strip(),
+            GITHUB_RELEASE_ASSET_NAME,
+            DEFAULT_EXE_NAME,
+        ]:
+            normalized_name = str(name or "").strip().lower()
+            if normalized_name and normalized_name not in preferred_names:
+                preferred_names.append(normalized_name)
+
+        normalized_assets = [asset for asset in assets if isinstance(asset, dict)]
+        for preferred_name in preferred_names:
+            for asset in normalized_assets:
+                asset_name = str(asset.get("name", "") or "").strip().lower()
+                if asset_name == preferred_name and asset.get("browser_download_url"):
+                    return asset
+
+        for asset in normalized_assets:
+            asset_name = str(asset.get("name", "") or "").strip().lower()
+            if asset_name.endswith(".exe") and asset.get("browser_download_url"):
+                return asset
+
+        return None
+
+    def start_update_check_thread(self, manual=False):
+        repo = self._configured_github_repo()
+        if self.update_check_in_progress:
+            if manual:
+                messagebox.showinfo("Actualización", "Ya hay una verificación en curso.")
+            return
+
+        if self.is_running:
+            if manual:
+                messagebox.showinfo(
+                    "Proceso en curso",
+                    "Busque actualizaciones cuando termine la descarga actual.",
+                )
+            return
+
+        if not repo:
+            if manual:
+                messagebox.showinfo(
+                    "Configurar GitHub",
+                    "Defina el repositorio en GITHUB_RELEASE_REPOSITORY o agregue "
+                    "'github_repo' en config_descargas.json con formato 'usuario/repositorio' "
+                    "antes de usar las actualizaciones automáticas.",
+                )
+            return
+
+        if not getattr(sys, "frozen", False):
+            if manual:
+                messagebox.showinfo(
+                    "Modo desarrollo",
+                    "La autoactualización funciona desde el .exe compilado. "
+                    "Pruebe esta función desde el ejecutable.",
+                )
+            return
+
+        self.update_check_in_progress = True
+        self._set_update_button_state(checking=True)
+        threading.Thread(
+            target=self._check_for_updates,
+            args=(manual,),
+            daemon=True,
+        ).start()
+
+    def _check_for_updates(self, manual=False):
+        try:
+            repo = self._configured_github_repo()
+            current_version = self._normalize_version_tag(APP_VERSION)
+
+            api_url = f"https://api.github.com/repos/{repo}/releases/latest"
+            request = urllib.request.Request(
+                api_url,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": GITHUB_API_VERSION,
+                    "User-Agent": APP_NAME,
+                },
+            )
+
+            with urllib.request.urlopen(request, timeout=30) as response:
+                release_info = json.loads(response.read().decode("utf-8"))
+
+            latest_version = self._normalize_version_tag(
+                release_info.get("tag_name") or release_info.get("name") or ""
+            )
+            if not latest_version:
+                raise RuntimeError("GitHub no devolvió una versión válida.")
+
+            if self._version_key(latest_version) <= self._version_key(current_version):
+                if manual:
+                    self._show_info_threadsafe(
+                        "Actualización",
+                        f"Ya tienes la última versión instalada.\n\nActual: V{current_version}",
+                    )
+                return
+
+            asset = self._choose_release_asset(release_info.get("assets"))
+            if not asset:
+                expected_name = self._expected_update_asset_name()
+                message = (
+                    "Hay una versión nueva en GitHub, pero no se encontró un archivo "
+                    f"compatible para actualizar.\n\nSube a Releases un asset llamado '{expected_name}'."
+                )
+                if manual:
+                    self._show_info_threadsafe("Actualización", message)
+                else:
+                    self.log(message, "WARN")
+                return
+
+            if not manual and self.update_prompted_version == latest_version:
+                return
+
+            self.update_prompted_version = latest_version
+            asset_name = str(asset.get("name") or self._expected_update_asset_name()).strip()
+            should_update = self._ask_yes_no_threadsafe(
+                "Actualización disponible",
+                "Hay una nueva versión disponible.\n\n"
+                f"Actual: V{current_version}\n"
+                f"Disponible: V{latest_version}\n"
+                f"Archivo: {asset_name}\n\n"
+                "La aplicación se cerrará para instalar la actualización.\n"
+                "¿Desea actualizar ahora?",
+            )
+            if not should_update:
+                self.log(f"Actualización pospuesta por el usuario: V{latest_version}", "INFO")
+                return
+
+            self._download_and_apply_update(release_info, asset)
+
+        except urllib.error.HTTPError as exc:
+            message = f"No se pudo consultar GitHub Releases (HTTP {exc.code})."
+            if manual:
+                self._show_error_threadsafe("Actualización", message)
+            else:
+                self.log(message, "WARN")
+        except urllib.error.URLError as exc:
+            message = f"No se pudo conectar con GitHub: {exc.reason}"
+            if manual:
+                self._show_error_threadsafe("Actualización", message)
+            else:
+                self.log(message, "WARN")
+        except Exception as exc:
+            message = f"Error buscando actualización: {exc}"
+            if manual:
+                self._show_error_threadsafe("Actualización", message)
+            else:
+                self.log(message, "WARN")
+        finally:
+            self.update_check_in_progress = False
+            self._set_update_button_state(checking=False)
+
+    def _create_update_script(self, downloaded_exe_path, target_exe_path):
+        script_path = os.path.join(
+            tempfile.gettempdir(),
+            f"ri_auto_update_{uuid.uuid4().hex[:8]}.ps1",
+        )
+        script_content = f"""$ErrorActionPreference = 'SilentlyContinue'
+$pidToWait = {os.getpid()}
+$sourceExe = {self._powershell_literal(downloaded_exe_path)}
+$targetExe = {self._powershell_literal(target_exe_path)}
+$deadline = (Get-Date).AddMinutes(5)
+
+while ((Get-Date) -lt $deadline) {{
+    $proc = Get-Process -Id $pidToWait -ErrorAction SilentlyContinue
+    if (-not $proc) {{
+        break
+    }}
+    Start-Sleep -Seconds 1
+}}
+
+Start-Sleep -Milliseconds 900
+$updated = $false
+for ($i = 0; $i -lt 10; $i++) {{
+    try {{
+        Move-Item -LiteralPath $sourceExe -Destination $targetExe -Force
+        $updated = $true
+        break
+    }} catch {{
+        Start-Sleep -Seconds 1
+    }}
+}}
+
+if ($updated) {{
+    Start-Process -FilePath $targetExe
+}}
+
+Remove-Item -LiteralPath $PSCommandPath -Force
+"""
+        with open(script_path, "w", encoding="utf-8") as script_file:
+            script_file.write(script_content)
+        return script_path
+
+    def _shutdown_for_update(self, update_script_path):
+        try:
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.Popen(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-File",
+                    update_script_path,
+                ],
+                creationflags=creationflags,
+            )
+        except Exception as exc:
+            self._show_error_threadsafe(
+                "Actualización",
+                f"No se pudo iniciar el instalador de actualización: {exc}",
+            )
+            return
+
+        if self._should_persist_config_on_close():
+            self.save_config()
+
+        self.is_running = False
+        self.is_paused = False
+
+        if self.driver:
+            try:
+                self._set_browser_close_warning_enabled(False)
+                self.driver.quit()
+            except Exception:
+                pass
+            finally:
+                self.driver = None
+
+        self.destroy()
+
+    def _download_and_apply_update(self, release_info, asset):
+        exe_path = self._current_exe_path()
+        if not exe_path or not os.path.exists(exe_path):
+            raise RuntimeError("No se encontró el ejecutable actual para reemplazarlo.")
+
+        asset_name = str(asset.get("name") or self._expected_update_asset_name()).strip()
+        asset_url = str(asset.get("browser_download_url") or "").strip()
+        if not asset_url:
+            raise RuntimeError("El release no incluye una URL de descarga válida.")
+
+        temp_dir = tempfile.mkdtemp(prefix="RIUpdater_")
+        temp_exe_path = os.path.join(temp_dir, re.sub(r"[^A-Za-z0-9._-]", "_", asset_name))
+
+        self.log(f"Descargando actualización {asset_name}...", "INFO")
+        request = urllib.request.Request(
+            asset_url,
+            headers={
+                "Accept": "application/octet-stream",
+                "User-Agent": APP_NAME,
+            },
+        )
+
+        with urllib.request.urlopen(request, timeout=120) as response, open(temp_exe_path, "wb") as output_file:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                output_file.write(chunk)
+
+        if not os.path.exists(temp_exe_path) or os.path.getsize(temp_exe_path) <= 0:
+            raise RuntimeError("La descarga de la actualización llegó vacía o incompleta.")
+
+        latest_version = self._normalize_version_tag(
+            release_info.get("tag_name") or release_info.get("name") or ""
+        )
+        self.log(f"Actualización V{latest_version} descargada. Cerrando para instalar...", "WARN")
+        update_script_path = self._create_update_script(temp_exe_path, exe_path)
+        self.after(0, lambda p=update_script_path: self._shutdown_for_update(p))
+
+    def _confirm_logout_before_app_close(self):
+        if not self.driver:
+            return True
+        return messagebox.askokcancel(
+            "Aviso importante",
+            "ANTES DE CERRAR SAL DE LA CUENTA.\n\n"
+            "Cierre sesion en el navegador y luego pulse Aceptar para salir.",
+        )
+
+    def _active_download_dir(self):
+        return self.run_download_dir or self.download_dir.get()
+
+    def _prepare_run_download_dir(self):
+        base_dir = self._normalize_folder_path(self.download_dir.get())
+        os.makedirs(base_dir, exist_ok=True)
+
+        fecha = datetime.datetime.now().strftime("%Y%m%d")
+        unique_id = uuid.uuid4().hex[:8].upper()
+        folder_name = f"Trabajo_{fecha}_{unique_id}"
+        run_dir = os.path.join(base_dir, folder_name)
+        while os.path.exists(run_dir):
+            unique_id = uuid.uuid4().hex[:8].upper()
+            folder_name = f"Trabajo_{fecha}_{unique_id}"
+            run_dir = os.path.join(base_dir, folder_name)
+
+        os.makedirs(run_dir, exist_ok=True)
+        self.run_download_dir = run_dir
+        self.log(f"Sesion de descarga creada: {run_dir}", "INFO")
+        return run_dir
+
+    def _apply_runtime_download_dir(self, target_dir):
+        if not self.driver:
+            return False
+        target_dir = self._normalize_folder_path(target_dir)
+        os.makedirs(target_dir, exist_ok=True)
+
+        commands = [
+            (
+                "Browser.setDownloadBehavior",
+                {
+                    "behavior": "allow",
+                    "downloadPath": target_dir,
+                    "eventsEnabled": False,
+                },
+            ),
+            (
+                "Page.setDownloadBehavior",
+                {
+                    "behavior": "allow",
+                    "downloadPath": target_dir,
+                },
+            ),
+        ]
+
+        last_error = None
+        for command_name, payload in commands:
+            try:
+                self.driver.execute_cdp_cmd(command_name, payload)
+                self.browser_download_dir = target_dir
+                return True
+            except Exception as e:
+                last_error = e
+
+        self.log(f"No se pudo aplicar carpeta de descarga en navegador: {last_error}", "WARN")
+        return False
+
+    def _fallback_browser_download_dir(self):
+        fallback_dir = self.browser_download_dir or self.download_dir.get() or DEFAULT_DOWNLOAD_DIR
+        fallback_dir = self._normalize_folder_path(fallback_dir)
+        os.makedirs(fallback_dir, exist_ok=True)
+        self.browser_download_dir = fallback_dir
+        return fallback_dir
+
+    def _sync_browser_download_dir(self, target_dir):
+        target_dir = self._normalize_folder_path(target_dir)
+        if self._apply_runtime_download_dir(target_dir):
+            return target_dir, True
+
+        fallback_dir = self._fallback_browser_download_dir()
+        if os.path.normcase(fallback_dir) != os.path.normcase(target_dir):
+            self.log(
+                f"El navegador mantiene la carpeta actual: {fallback_dir}. "
+                "Si necesita usar otra carpeta, cierre y abra de nuevo el navegador.",
+                "WARN",
+            )
+        return fallback_dir, False
+
+    def _capture_failure_evidence(self, row_index, attempt_number, error_message):
+        evidence_root = os.path.join(self._active_download_dir(), "_evidencias_fallos")
+        try:
+            os.makedirs(evidence_root, exist_ok=True)
+        except Exception:
+            return
+
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = f"fila_{row_index:04d}_intento_{attempt_number}_{stamp}"
+        screenshot_path = os.path.join(evidence_root, f"{base_name}.png")
+        html_path = os.path.join(evidence_root, f"{base_name}.html")
+        info_path = os.path.join(evidence_root, f"{base_name}.txt")
+
+        current_url = ""
+        try:
+            current_url = self.driver.current_url if self.driver else ""
+        except Exception:
+            current_url = ""
+
+        try:
+            if self.driver:
+                self.driver.save_screenshot(screenshot_path)
+        except Exception:
+            pass
+
+        try:
+            if self.driver:
+                with open(html_path, "w", encoding="utf-8", errors="ignore") as f:
+                    f.write(self.driver.page_source or "")
+        except Exception:
+            pass
+
+        try:
+            with open(info_path, "w", encoding="utf-8") as f:
+                f.write(f"timestamp={datetime.datetime.now().isoformat()}\n")
+                f.write(f"fila={row_index}\n")
+                f.write(f"intento={attempt_number}\n")
+                f.write(f"url={current_url}\n")
+                f.write(f"error={error_message}\n")
+        except Exception:
+            pass
+
+        self.log(f"Evidencia guardada para fila {row_index}: {base_name}", "WARN")
+
+    def _update_retry_button_state(self):
+        total_failed = len(sorted(set(self.failed_rows)))
+        state = "normal" if (total_failed > 0 and not self.is_running and self.driver) else "disabled"
+        self.btn_retry_failed.configure(text=f"Reintentar fallidos ({total_failed})", state=state)
+
+    def _get_table_rows(self):
+        try:
+            # Prioriza la tabla principal de resultados para evitar filas de modales u otras vistas.
+            rows = self.driver.find_elements(By.XPATH, "//table[@id='DataTables_Table_0']//tbody/tr[td]")
+            if rows:
+                return rows
+
+            rows = self.driver.find_elements(By.XPATH, "//table[contains(@class,'dataTable')]//tbody/tr[td]")
+            if rows:
+                return rows
+        except Exception:
+            pass
+        return self.driver.find_elements(By.CSS_SELECTOR, "tr")
+
+    def _extract_verdetalle_parts(self, ver_button):
+        try:
+            onclick = (ver_button.get_attribute("onclick") or "").strip()
+            if "VerDetalle" not in onclick:
+                return {}
+
+            args = re.findall(r"'([^']*)'", onclick)
+            if len(args) < 3:
+                return {}
+
+            tipo = args[0].strip() or "Documento"
+            docid = args[1].strip()
+            uddocid = args[2].strip()
+            key = f"{tipo}|{docid}|{uddocid}"
+            return {"tipo": tipo, "docid": docid, "uddocid": uddocid, "key": key}
+        except Exception:
+            return {}
+
+    def _normalize_document_type(self, document_type):
+        return re.sub(r"\s+", " ", str(document_type or "").strip()).lower()
+
+    def _extract_row_document_type(self, row_element, row_parts=None):
+        try:
+            cells = row_element.find_elements(By.TAG_NAME, "td")
+            if len(cells) >= 2:
+                tipo_visible = re.sub(r"\s+", " ", (cells[1].text or "").strip())
+                if tipo_visible:
+                    return tipo_visible
+        except Exception:
+            pass
+
+        if row_parts:
+            tipo = re.sub(r"\s+", " ", str(row_parts.get("tipo", "")).strip())
+            if tipo:
+                return tipo
+        return ""
+
+    def _find_modal_view_buttons(self, timeout=8):
+        modal_link_xpaths = [
+            "//*[@id='modalVerDetalle' and not(contains(@style,'display: none'))]//tr[td]//*[self::a or self::button][contains(normalize-space(.), 'Ver') or contains(normalize-space(.), 'Abrir') or contains(@title, 'Ver') or contains(@title, 'Abrir')]",
+            "//*[@id='modalVerDetalle']//tr[td]//*[self::a or self::button][contains(normalize-space(.), 'Ver') or contains(normalize-space(.), 'Abrir') or contains(@title, 'Ver') or contains(@title, 'Abrir')]",
+            "(//div[contains(@class,'modal') and (contains(@class,'show') or contains(@class,'in') or not(contains(@style,'display: none')))]//tr[td]//*[self::a or self::button][contains(normalize-space(.), 'Ver') or contains(normalize-space(.), 'Abrir') or contains(@title, 'Ver') or contains(@title, 'Abrir')])",
+            "(//a[contains(normalize-space(.), 'Ver') or contains(normalize-space(.), 'Abrir') or @target='_blank' or contains(@href,'SecureImage')] | //button[contains(normalize-space(.), 'Ver') or contains(normalize-space(.), 'Abrir')])",
+        ]
+
+        last_error = None
+        for candidate_xpath in modal_link_xpaths:
+            try:
+                WebDriverWait(self.driver, timeout).until(
+                    lambda d, xp=candidate_xpath: len(d.find_elements(By.XPATH, xp)) > 0
+                )
+                buttons = self.driver.find_elements(By.XPATH, candidate_xpath)
+                visible_buttons = []
+                for button in buttons:
+                    try:
+                        if button.is_displayed():
+                            visible_buttons.append(button)
+                    except Exception:
+                        pass
+                if visible_buttons:
+                    return visible_buttons, candidate_xpath
+            except TimeoutException as e:
+                last_error = e
+
+        raise TimeoutException("No se encontro enlace 'Ver' en modal Detalle") from last_error
+
+    def _get_modal_detail_entries(self):
+        try:
+            entries = self.driver.execute_script(
+                """
+                function isVisible(el) {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    return style.display !== "none" && style.visibility !== "hidden";
+                }
+
+                const modal = document.getElementById("modalVerDetalle");
+                const scope = (modal && isVisible(modal)) ? modal : document;
+                const rows = Array.from(scope.querySelectorAll("tr"));
+                const data = [];
+
+                for (const row of rows) {
+                    const link = row.querySelector("a, button");
+                    if (!link) continue;
+
+                    const label = `${link.textContent || ""} ${link.getAttribute("title") || ""}`.trim();
+                    const href = (link.getAttribute("href") || "").trim();
+                    const onclick = (link.getAttribute("onclick") || "").trim();
+                    if (!/ver|abrir/i.test(label) && !href && !onclick) continue;
+
+                    const cells = row.querySelectorAll("td");
+                    let info = "";
+                    if (cells.length >= 2) {
+                        info = (cells[1].textContent || "").trim();
+                    } else if (cells.length >= 1) {
+                        info = (cells[0].textContent || "").trim();
+                    }
+
+                    data.push({
+                        info: (info || `Detalle ${data.length + 1}`).replace(/\\s+/g, " ").trim()
+                    });
+                }
+
+                return data;
+                """
+            )
+            return entries if isinstance(entries, list) else []
+        except Exception:
+            return []
+
+    def _build_unique_filename(self, row_index, ver_button, detail_index=None):
+        parts = self._extract_verdetalle_parts(ver_button)
+        short_id = uuid.uuid4().hex[:6].upper()
+        row_tag = f"{row_index + 1:03d}"
+        detail_tag = f"_D{detail_index + 1:02d}" if detail_index is not None else ""
+
+        docid = parts.get("docid", "")
+        uddocid = parts.get("uddocid", "")
+        if docid:
+            return f"T{row_tag}{detail_tag}_{docid}_{short_id}.pdf"
+        if uddocid:
+            return f"T{row_tag}{detail_tag}_{uddocid}_{short_id}.pdf"
+        return f"T{row_tag}{detail_tag}_{short_id}.pdf"
+
+    def _set_browser_close_warning_enabled(self, enabled):
+        if not self.driver:
+            return
+        try:
+            self.driver.execute_script(
+                "window.__closeAccountWarnEnabled = arguments[0] ? true : false;",
+                bool(enabled),
+            )
+        except Exception:
+            pass
+
+    def _install_browser_close_warning(self, enabled=False):
+        if not self.driver:
+            return
+
+        warning_text = "ANTES DE CERRAR SAL DE LA CUENTA"
+        enabled_js = "true" if enabled else "false"
+        cdp_source = """
+            (function() {
+                const warningText = "ANTES DE CERRAR SAL DE LA CUENTA";
+                const initialEnabled = __INITIAL_ENABLED__;
+                window.__closeAccountWarnEnabled = initialEnabled;
+                if (window.__closeAccountWarnInstalled) return;
+                window.__closeAccountWarnInstalled = true;
+                window.addEventListener("beforeunload", function (event) {
+                    if (!window.__closeAccountWarnEnabled) return;
+                    event.preventDefault();
+                    event.returnValue = warningText;
+                    return warningText;
+                });
+            })();
+        """.replace("__INITIAL_ENABLED__", enabled_js)
+
+        try:
+            # Inyecta el handler en futuras navegaciones del tab activo.
+            self.driver.execute_cdp_cmd(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": cdp_source},
+            )
+        except Exception:
+            pass
+
+        try:
+            # Inyecta tambien en el documento actual.
+            self.driver.execute_script(
+                """
+                (function(warningText, enabled) {
+                    window.__closeAccountWarnEnabled = enabled ? true : false;
+                    if (window.__closeAccountWarnInstalled) return;
+                    window.__closeAccountWarnInstalled = true;
+                    window.addEventListener("beforeunload", function (event) {
+                        if (!window.__closeAccountWarnEnabled) return;
+                        event.preventDefault();
+                        event.returnValue = warningText;
+                        return warningText;
+                    });
+                })(arguments[0], arguments[1]);
+                """,
+                warning_text,
+                bool(enabled),
+            )
+        except Exception:
+            pass
+
+    def _get_modal_detail_signature(self):
+        try:
+            signature = self.driver.execute_script(
+                """
+                try {
+                    const modal = document.getElementById("modalVerDetalle");
+                    if (!modal) return "";
+
+                    const link = modal.querySelector("a[href], button[onclick], button");
+                    const href = link ? (link.getAttribute("href") || "") : "";
+                    const onclick = link ? (link.getAttribute("onclick") || "") : "";
+                    const text = link ? ((link.textContent || "").trim()) : "";
+                    const display = modal.style && modal.style.display ? modal.style.display : "";
+                    return [display, href, onclick, text].join("|");
+                } catch (e) {
+                    return "";
+                }
+                """
+            )
+            return str(signature or "").strip()
+        except Exception:
+            return ""
+
+    def _select_folder(self):
+        if self.is_running:
+            messagebox.showinfo("Proceso en curso", "Cambie la carpeta cuando termine la descarga actual.")
+            return
+
+        folder = filedialog.askdirectory(initialdir=self._normalize_folder_path(self.download_dir.get()))
+        if folder:
+            selected_dir, browser_updated = self._set_download_base_dir(
+                folder,
+                persist=True,
+                apply_to_browser=bool(self.driver),
+            )
+            if self.driver:
+                if browser_updated:
+                    self.log(f"Carpeta cambiada, guardada y aplicada al navegador: {selected_dir}", "SUCCESS")
+                else:
+                    self.log(f"Carpeta cambiada y guardada: {selected_dir}", "WARN")
+            else:
+                self.log(f"Carpeta cambiada y guardada: {selected_dir}", "INFO")
+
+    def log(self, message, level="INFO", persist=True):
+        self.log_queue.put((message, level))
+        if not persist:
+            return
+        try:
+            with open("historial_actividad.txt", "a", encoding="utf-8") as f:
+                timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                f.write(f"[{timestamp}] [{level}] {message}\n")
+        except: pass
+
+    def _process_log_queue(self):
+        try:
+            while True:
+                msg, level = self.log_queue.get_nowait()
+                timestamp = time.strftime('%H:%M:%S')
+                prefix = "[INFO] "
+                if level == "SUCCESS": prefix = "[OK] "
+                elif level == "ERROR": prefix = "[ERR] "
+                elif level == "WARN": prefix = "[WARN] "
+                elif level == "WAIT": prefix = "[WAIT] "
+                final_msg = f"[{timestamp}] {prefix}{msg}\n"
+                
+                self.log_area.configure(state="normal")
+                self.log_area.insert("end", final_msg)
+                self.log_area.see("end")
+                self.log_area.configure(state="disabled")
+        except queue.Empty: pass
+        finally: self.after(100, self._process_log_queue)
+
+    def on_close(self):
+        if self.is_running:
+            if not messagebox.askokcancel("Salir", "El programa esta trabajando. Seguro que quiere salir?"):
+                return
+            self.is_running = False
+
+        if not self._confirm_logout_before_app_close():
+            return
+
+        if self._should_persist_config_on_close():
+            self.save_config()
+
+        if self.driver:
+            try:
+                self._set_browser_close_warning_enabled(False)
+                self.driver.quit()
+            except:
+                pass
+        self.destroy()
+
+    def stop_process(self):
+        if self.is_running:
+            self.is_running = False
+            self.log("Deteniendo... (TerminarÃ¡ el archivo actual)", "WARN")
+            self.btn_cancel.configure(text="Deteniendo...", state="disabled")
+            self.btn_pause.configure(state="disabled")
+            self.after(0, lambda: self._refresh_stats_labels("Deteniendo..."))
+
+    def toggle_pause(self):
+        if not self.is_running: return
+        self.is_paused = not self.is_paused
+        if self.is_paused:
+            self.btn_pause.configure(text="Continuar", fg_color=SUCCESS)
+            self.log("PAUSA ACTIVADA. Presione 'Continuar'.", "WAIT")
+            self.header_activity.stop()
+            self._refresh_stats_labels("Pausado")
+        else:
+            self.btn_pause.configure(text="Pausar", fg_color=WARN)
+            self.log("Continuando...", "INFO")
+            self.header_activity.start()
+            self._refresh_stats_labels("Procesando")
+
+    def toggle_ui_state(self, working):
+        if working:
+            self._set_browser_close_warning_enabled(False)
+            self.entry_dir.configure(state="disabled")
+            self.btn_folder.configure(state="disabled")
+            self.btn_browser.configure(state="disabled")
+            self.btn_start.configure(state="disabled")
+            self.btn_cancel.configure(state="normal", text="Cancelar", fg_color=DANGER)
+            self.btn_pause.configure(state="normal", text="Pausar", fg_color=WARN)
+            self.btn_retry_failed.configure(state="disabled")
+            self.progress.configure(mode="determinate")
+            self.progress.set(0)
+            self.header_activity.start()
+            self._refresh_stats_labels("Procesando")
+        else:
+            self.entry_dir.configure(state="normal")
+            self.btn_folder.configure(state="normal")
+            self.btn_browser.configure(state="normal")
+            self.btn_start.configure(state="normal")
+            self.btn_cancel.configure(state="disabled", text="Cancelar", fg_color=DANGER)
+            self.btn_pause.configure(state="disabled")
+            self.progress.configure(mode="determinate")
+            self.header_activity.stop()
+            if self.stats["success"] == 0 and self.stats["error"] == 0:
+                self.progress.set(0)
+                self._refresh_stats_labels("Esperando inicio")
+            self._update_retry_button_state()
+            self._set_browser_close_warning_enabled(True)
+
+    def launch_browser(self):
+        try:
+            self.log("Abriendo navegador...", "INFO")
+            selected_dir, _ = self._set_download_base_dir(
+                self.download_dir.get(),
+                persist=True,
+                apply_to_browser=False,
+            )
+            if not os.path.exists(selected_dir):
+                os.makedirs(selected_dir)
+
+            if self.driver:
+                try:
+                    self.driver.quit()
+                except Exception:
+                    pass
+                self.driver = None
+
+            options = Options()
+            prefs = {
+                "download.default_directory": selected_dir,
+                "download.prompt_for_download": False,
+                "download.directory_upgrade": True,
+                "plugins.always_open_pdf_externally": True,
+                "pdfjs.disabled": True,
+                "profile.default_content_settings.popups": 0
+            }
+            options.add_experimental_option("prefs", prefs)
+            options.add_argument("--start-maximized")
+            options.add_argument("--disable-infobars")
+             
+            service = Service(ChromeDriverManager().install())
+            self.driver = webdriver.Chrome(service=service, options=options)
+            self.driver.set_page_load_timeout(120)
+            self.driver.set_script_timeout(90)
+            self.browser_download_dir = selected_dir
+            self._apply_runtime_download_dir(selected_dir)
+            self._install_browser_close_warning(enabled=False)
+              
+            self.log("Navegador listo.", "SUCCESS")
+            self.driver.get("https://oficinavirtual.ri.gob.do/PH")
+            self._install_browser_close_warning(enabled=False)
+            
+            self.log(">>> ESPERANDO: Inicie sesiÃ³n y navegue a la tabla.", "WARN")
+            self.btn_start.configure(state="normal")
+            self._refresh_stats_labels("Navegador listo")
+            self._update_retry_button_state()
+            
+        except Exception as e:
+            self.log(f"Error navegador: {str(e)}", "ERROR")
+            messagebox.showerror("Error", f"No se pudo iniciar Chrome: {e}")
+
+    def start_scraping_thread(self):
+        self._start_scraping_mode(target_rows=None, retry_mode=False)
+
+    def retry_failed_rows_thread(self):
+        if not self.driver:
+            messagebox.showwarning("Error", "Primero presione el BotÃ³n 1.")
+            return
+        if self.is_running:
+            return
+
+        retry_rows = sorted(set(self.failed_rows))
+        if not retry_rows:
+            messagebox.showinfo("Sin fallidos", "No hay filas fallidas para reintentar.")
+            return
+
+        self._start_scraping_mode(target_rows=retry_rows, retry_mode=True)
+
+    def _start_scraping_mode(self, target_rows=None, retry_mode=False):
+        if not self.driver:
+            messagebox.showwarning("Error", "Primero presione el BotÃ³n 1.")
+            return
+
+        if retry_mode:
+            rows_to_process = sorted(set(target_rows or self.failed_rows))
+            if not rows_to_process:
+                messagebox.showinfo("Sin fallidos", "No hay filas fallidas para reintentar.")
+                return
+            self.failed_rows = []
+        else:
+            rows_to_process = None
+            self.failed_rows = []
+
+        selected_dir, _ = self._set_download_base_dir(
+            self.download_dir.get(),
+            persist=True,
+            apply_to_browser=True,
+        )
+        run_dir = self._prepare_run_download_dir()
+        active_run_dir, run_dir_synced = self._sync_browser_download_dir(run_dir)
+        self.run_download_dir = active_run_dir
+        if not run_dir_synced and os.path.normcase(active_run_dir) != os.path.normcase(run_dir):
+            self.log(f"Esta ejecucion usara la carpeta activa del navegador: {active_run_dir}", "WARN")
+        elif os.path.normcase(active_run_dir) == os.path.normcase(selected_dir):
+            self.log(f"Esta ejecucion usara la carpeta base seleccionada: {active_run_dir}", "INFO")
+
+        self.stats = {"success": 0, "error": 0}
+        self.is_running = True
+        self.is_paused = False
+        self.toggle_ui_state(working=True)
+        self._refresh_stats_labels("Reintentando fallidos..." if retry_mode else "Iniciando...")
+
+        t = threading.Thread(target=self._scraping_logic, args=(rows_to_process,))
+        t.daemon = True
+        t.start()
+
+    def _is_valid_pdf_file(self, file_path, min_size=1024):
+        try:
+            if not os.path.exists(file_path):
+                return False
+
+            size = os.path.getsize(file_path)
+            if size < min_size:
+                return False
+
+            with open(file_path, "rb") as f:
+                header = f.read(5)
+            return header == b"%PDF-"
+        except:
+            return False
+
+    def _wait_for_download(self, initial_files, timeout=45, expected_name=None):
+        ignored_files = set()
+        expected_base = None
+        stable_sizes = {}
+        stable_counts = {}
+        if expected_name:
+            expected_base = os.path.splitext(expected_name)[0].strip().lower()
+
+        end_time = time.monotonic() + timeout
+        while time.monotonic() < end_time:
+            can_continue, paused_elapsed = self._wait_if_paused_with_elapsed()
+            end_time += paused_elapsed
+            if not can_continue:
+                return None
+            try:
+                active_dir = self._active_download_dir()
+                current_files = set(os.listdir(active_dir))
+                new_files = current_files - initial_files - ignored_files
+                if new_files:
+                    valid_files = [f for f in new_files if not f.endswith(".crdownload") and not f.endswith(".tmp")]
+
+                    if expected_base:
+                        filtered_files = []
+                        for file_name in valid_files:
+                            base = os.path.splitext(file_name)[0].lower()
+                            if base == expected_base or base.startswith(f"{expected_base} ("):
+                                filtered_files.append(file_name)
+                        valid_files = filtered_files
+
+                    if valid_files:
+                        valid_files.sort(
+                            key=lambda f: os.path.getmtime(os.path.join(active_dir, f)),
+                            reverse=True,
+                        )
+
+                        for file_name in valid_files:
+                            file_path = os.path.join(active_dir, file_name)
+
+                            try:
+                                current_size = os.path.getsize(file_path)
+                                previous_size = stable_sizes.get(file_name)
+                                stable_sizes[file_name] = current_size
+
+                                if previous_size is None or previous_size != current_size:
+                                    stable_counts[file_name] = 0
+                                    continue
+                                stable_counts[file_name] = stable_counts.get(file_name, 0) + 1
+                                if stable_counts[file_name] < 2:
+                                    continue
+                            except:
+                                continue
+
+                            if self._is_valid_pdf_file(file_path):
+                                return file_name
+
+                            self.log(f"Descarga invalida detectada y descartada: {file_name}", "WARN")
+                            ignored_files.add(file_name)
+                            stable_sizes.pop(file_name, None)
+                            stable_counts.pop(file_name, None)
+            except:
+                pass
+            can_continue, paused_elapsed = self._sleep_with_pause_and_elapsed(0.5)
+            end_time += paused_elapsed
+            if not can_continue:
+                return None
+        return None
+
+    def _wait_for_pdf_ready(self, timeout=45):
+        end_time = time.monotonic() + timeout
+        last_uri = ""
+        stable_uri_hits = 0
+        while time.monotonic() < end_time:
+            can_continue, paused_elapsed = self._wait_if_paused_with_elapsed()
+            end_time += paused_elapsed
+            if not can_continue:
+                return None
+            try:
+                result = self.driver.execute_script(
+                    """
+                    const data = {
+                        uri: "",
+                        viewerDownloadUrl: "",
+                        readyState: document.readyState || "",
+                        buttonReady: false,
+                        buttonEnabled: false
+                    };
+
+                    function toAbsolute(url) {
+                        if (!url) return "";
+                        try { return new URL(url, window.location.href).href; } catch (e) { return ""; }
+                    }
+
+                    function parseReaderControlDownloadUrl(readerSrc) {
+                        try {
+                            const full = new URL(readerSrc, window.location.href);
+                            const hash = (full.hash || "").replace(/^#/, "");
+                            if (!hash) return "";
+                            const params = new URLSearchParams(hash);
+                            const customRaw = params.get("custom");
+                            if (!customRaw) return "";
+                            const custom = JSON.parse(customRaw);
+                            if (custom && custom.downloadAsPdfUrl) {
+                                return toAbsolute(custom.downloadAsPdfUrl);
+                            }
+                        } catch (e) {}
+                        return "";
+                    }
+
+                    // Caso especial del visor DocumentUltimate (SecureImage.aspx).
+                    try {
+                        const readerFrame = document.querySelector("iframe[src*='ReaderControl.html']");
+                        if (readerFrame) {
+                            const src = readerFrame.getAttribute("src") || "";
+                            const duUrl = parseReaderControlDownloadUrl(src);
+                            if (duUrl) data.viewerDownloadUrl = duUrl;
+                        }
+                    } catch (e) {}
+
+                    // Fallback: extraer downloadAsPdfUrl desde el script inline del loader.
+                    if (!data.viewerDownloadUrl) {
+                        try {
+                            const loader = document.getElementById("documentViewer-loader");
+                            const txt = loader ? (loader.textContent || "") : "";
+                            if (txt) {
+                                const m = txt.match(/downloadAsPdfUrl\\\\?":\\\\?"([^"]+)/i);
+                                if (m && m[1]) {
+                                    const unescaped = m[1]
+                                        .replace(/\\\\u0026/g, "&")
+                                        .replace(/\\u0026/g, "&")
+                                        .replace(/\\\\\\//g, "/")
+                                        .replace(/\\\\/g, "");
+                                    data.viewerDownloadUrl = toAbsolute(unescaped);
+                                }
+                            }
+                        } catch (e) {}
+                    }
+
+                    const embed = document.querySelector("embed[src]");
+                    const iframe = document.querySelector("iframe[src]");
+                    const obj = document.querySelector("object[data]");
+
+                    if (embed && embed.src) data.uri = embed.src;
+                    if (!data.uri && iframe && iframe.src) data.uri = iframe.src;
+                    if (!data.uri && obj && obj.data) data.uri = obj.data;
+
+                    if (!data.uri && window.location && window.location.href) {
+                        const href = window.location.href;
+                        if (href.startsWith("blob:") || href.toLowerCase().includes(".pdf")) data.uri = href;
+                    }
+
+                    const blockedPrefixes = ["chrome-extension://", "edge://", "about:", "data:text/html"];
+                    if (data.uri && blockedPrefixes.some(prefix => data.uri.startsWith(prefix))) {
+                        data.uri = "";
+                    }
+
+                    // Si tenemos URL directa de DownloadAsPdf, esta es la fuente mas confiable.
+                    if (data.viewerDownloadUrl) {
+                        data.uri = data.viewerDownloadUrl;
+                    }
+
+                    const directBtn = document.querySelector("a[download], button[download], #download, cr-icon-button#download, [aria-label*='Download'], [aria-label*='Descargar'], [title*='Download'], [title*='Descargar']");
+                    if (directBtn) {
+                        data.buttonReady = true;
+                        data.buttonEnabled = !directBtn.disabled && !directBtn.hasAttribute("disabled");
+                    }
+
+                    try {
+                        const viewer = document.querySelector("pdf-viewer");
+                        if (viewer && viewer.shadowRoot) {
+                            const toolbar = viewer.shadowRoot.querySelector("viewer-toolbar");
+                            if (toolbar && toolbar.shadowRoot) {
+                                const shadowBtn = toolbar.shadowRoot.querySelector(
+                                    "#download, cr-icon-button#download, button[aria-label*='Download'], button[aria-label*='Descargar']"
+                                );
+                                if (shadowBtn) {
+                                    data.buttonReady = true;
+                                    data.buttonEnabled = !shadowBtn.disabled && !shadowBtn.hasAttribute("disabled");
+                                }
+                            }
+                        }
+                    } catch (err) {}
+
+                    return data;
+                    """
+                )
+
+                result = result or {}
+                uri = str(result.get("viewerDownloadUrl") or result.get("uri", "")).strip()
+                page_ready = str(result.get("readyState", "")) == "complete"
+                button_ready = bool(result.get("buttonReady"))
+                button_enabled = bool(result.get("buttonEnabled"))
+
+                # Si el boton del visor ya esta habilitado, preferir esa ruta
+                if button_ready and button_enabled and page_ready:
+                    return ""
+                if uri and page_ready:
+                    if uri == last_uri:
+                        stable_uri_hits += 1
+                    else:
+                        last_uri = uri
+                        stable_uri_hits = 1
+
+                    if stable_uri_hits >= 2:
+                        return uri
+            except:
+                pass
+
+            can_continue, paused_elapsed = self._sleep_with_pause_and_elapsed(1)
+            end_time += paused_elapsed
+            if not can_continue:
+                return None
+
+        return None
+
+    def _is_pdf_context_visible(self):
+        try:
+            return bool(
+                self.driver.execute_script(
+                    """
+                    try {
+                        const ct = (document.contentType || "").toLowerCase();
+                        if (ct.includes("pdf")) return true;
+
+                        const embed = document.querySelector("embed[src*='.pdf'], embed[src^='blob:']");
+                        const frame = document.querySelector("iframe[src*='.pdf'], iframe[src^='blob:']");
+                        const obj = document.querySelector("object[type*='pdf'], object[data*='.pdf'], object[data^='blob:']");
+                        const viewer = document.querySelector("pdf-viewer");
+
+                        return !!(embed || frame || obj || viewer);
+                    } catch (e) {
+                        return false;
+                    }
+                    """
+                )
+            )
+        except Exception:
+            return False
+
+    def _download_via_source(self, source_uri, nombre_archivo):
+        if not source_uri:
+            return False
+        try:
+            result = self.driver.execute_async_script(
+                """
+                const uri = arguments[0];
+                const filename = arguments[1];
+                const done = arguments[arguments.length - 1];
+
+                if (!uri) {
+                    done({ ok: false, error: "sin_uri" });
+                    return;
+                }
+
+                fetch(uri)
+                    .then(resp => {
+                        if (!resp.ok && !uri.startsWith("blob:")) {
+                            throw new Error("HTTP " + resp.status);
+                        }
+
+                        const ct = (resp.headers.get("content-type") || "").toLowerCase();
+                        if (
+                            ct &&
+                            !ct.includes("pdf") &&
+                            !ct.includes("octet-stream") &&
+                            !ct.includes("binary") &&
+                            !uri.startsWith("blob:")
+                        ) {
+                            throw new Error("Respuesta no es PDF: " + ct);
+                        }
+                        return resp.blob();
+                    })
+                    .then(blob => {
+                        if (blob.size < 1024) {
+                            throw new Error("Blob demasiado pequeno");
+                        }
+
+                        return blob.slice(0, 5).text().then(head => {
+                            if (head !== "%PDF-") {
+                                throw new Error("Archivo no inicia con %PDF-");
+                            }
+                            return blob;
+                        });
+                    })
+                    .then(blob => {
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.style.display = "none";
+                        a.href = url;
+                        a.download = filename;
+                        document.body.appendChild(a);
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                        done({ ok: true });
+                    })
+                    .catch(err => {
+                        done({ ok: false, error: String(err) });
+                    });
+                """,
+                source_uri,
+                nombre_archivo,
+            )
+            if result and result.get("ok"):
+                return True
+
+            try:
+                error_detail = str((result or {}).get("error", "")).strip()
+            except Exception:
+                error_detail = ""
+
+            if error_detail:
+                self.log(f"Descarga por URL fallo: {error_detail}", "WARN")
+            return False
+        except:
+            return False
+
+    def _click_pdf_download_button(self):
+        try:
+            clicked = self.driver.execute_script(
+                """
+                function clickFirst(root, selectors) {
+                    if (!root) return false;
+                    for (const selector of selectors) {
+                        const el = root.querySelector(selector);
+                        if (el) {
+                            if (el.disabled || el.hasAttribute("disabled")) continue;
+                            const style = window.getComputedStyle(el);
+                            if (style.display === "none" || style.visibility === "hidden") continue;
+                            el.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+
+                const selectors = [
+                    "a[download]",
+                    "button[download]",
+                    "#download",
+                    "cr-icon-button#download",
+                    "button[aria-label*='Download']",
+                    "button[aria-label*='Descargar']",
+                    "[title*='Download']",
+                    "[title*='Descargar']"
+                ];
+
+                if (clickFirst(document, selectors)) return true;
+
+                // Fallback para visores que renderizan toolbar dentro de iframe (p. ej. DocumentUltimate).
+                try {
+                    const frameSelectors = [
+                        "#downloadButton",
+                        "[data-element='downloadButton']",
+                        "[data-element='downloadAsPdfButton']",
+                        "[data-element*='download']",
+                        "button[aria-label*='Download']",
+                        "button[title*='Download']",
+                        "[title*='Download as PDF']",
+                        "[title*='Download']",
+                        "a[download]"
+                    ];
+
+                    const frames = Array.from(document.querySelectorAll("iframe"));
+                    for (const frame of frames) {
+                        let frameDoc = null;
+                        try {
+                            frameDoc = frame.contentWindow && frame.contentWindow.document ? frame.contentWindow.document : null;
+                        } catch (e) {
+                            frameDoc = null;
+                        }
+                        if (!frameDoc) continue;
+
+                        if (clickFirst(frameDoc, frameSelectors)) return true;
+
+                        const nestedFrames = Array.from(frameDoc.querySelectorAll("iframe"));
+                        for (const nested of nestedFrames) {
+                            let nestedDoc = null;
+                            try {
+                                nestedDoc = nested.contentWindow && nested.contentWindow.document ? nested.contentWindow.document : null;
+                            } catch (e) {
+                                nestedDoc = null;
+                            }
+                            if (!nestedDoc) continue;
+                            if (clickFirst(nestedDoc, frameSelectors)) return true;
+                        }
+                    }
+                } catch (err) {}
+
+                try {
+                    const viewer = document.querySelector("pdf-viewer");
+                    if (viewer && viewer.shadowRoot) {
+                        if (clickFirst(viewer.shadowRoot, selectors)) return true;
+                        const toolbar = viewer.shadowRoot.querySelector("viewer-toolbar");
+                        if (toolbar && toolbar.shadowRoot) {
+                            if (clickFirst(toolbar.shadowRoot, selectors)) return true;
+                        }
+                    }
+                } catch (err) {}
+
+                return false;
+                """
+            )
+            return bool(clicked)
+        except:
+            return False
+
+    def _start_pdf_download(self, source_uri, nombre_archivo):
+        source_text = (source_uri or "").lower()
+
+        # En visores tipo DocumentUltimate, la URL DownloadAsPdf suele ser la via mas estable.
+        if source_uri and ("downloadaspdf" in source_text or "documentviewer.ashx" in source_text):
+            if self._download_via_source(source_uri, nombre_archivo):
+                return True
+
+        # Primero intentar boton real del visor (menos propenso a descargar contenido incorrecto)
+        if self._click_pdf_download_button():
+            return True
+
+        if source_uri:
+            if self._download_via_source(source_uri, nombre_archivo):
+                return True
+            self.log("No se pudo descargar por URL valida. Reintentando...", "WARN")
+
+        return False
+
+    def _close_extra_windows(self, main_window):
+        try:
+            handles = list(self.driver.window_handles)
+        except Exception:
+            return
+
+        for handle in handles:
+            if handle == main_window:
+                continue
+            try:
+                self.driver.switch_to.window(handle)
+                self.driver.close()
+            except Exception:
+                pass
+
+        try:
+            remaining = list(self.driver.window_handles)
+            if main_window in remaining:
+                self.driver.switch_to.window(main_window)
+            elif remaining:
+                self.driver.switch_to.window(remaining[0])
+            self._install_browser_close_warning(enabled=False)
+        except Exception:
+            pass
+
+    def _scraping_logic(self, target_rows=None):
+        start_row_index = 0
+        try:
+            self.log("Iniciando secuencia de descargas...", "INFO")
+            wait = WebDriverWait(self.driver, 20)
+            main_window = self.driver.current_window_handle
+            self._close_extra_windows(main_window)
+
+            rows = self._get_table_rows()
+            total_rows = len(rows)
+
+            if total_rows <= 0:
+                self.log("No se encontraron filas. Verifique que esta en la tabla correcta.", "ERROR")
+                self.after(0, lambda: self._refresh_stats_labels("Sin filas para procesar"))
+                return
+
+            if target_rows:
+                process_rows = [idx for idx in sorted(set(target_rows)) if start_row_index <= idx < total_rows]
+                if not process_rows:
+                    self.log("No hay filas fallidas validas para reintentar en la vista actual.", "WARN")
+                    self.after(0, lambda: self._refresh_stats_labels("Sin filas fallidas visibles"))
+                    return
+                self.log(f"Reintentando {len(process_rows)} filas fallidas.", "WARN")
+            else:
+                process_rows = list(range(start_row_index, total_rows))
+                self.log(f"Total filas detectadas: {total_rows}", "INFO")
+
+            total_data_rows = max(1, len(process_rows))
+            last_row_key = ""
+            last_target_identity = ""
+
+            for position, i in enumerate(process_rows):
+                if not self.is_running:
+                    self.log("Cancelado por usuario.", "WARN")
+                    break
+
+                if not self._wait_if_paused():
+                    break
+
+                current_progress = position / total_data_rows
+                self.after(0, lambda v=current_progress: self.progress.set(v))
+                self.after(0, lambda idx=i, total=process_rows[-1]: self._refresh_stats_labels(f"Procesando fila {idx}/{total}"))
+
+                try:
+                    fresh_rows = self._get_table_rows()
+                    if i < len(fresh_rows):
+                        row_element = fresh_rows[i]
+                        self.driver.execute_script(
+                            "arguments[0].style.backgroundColor = '#FFF2CC'; arguments[0].style.border = '2px solid #FFD966';",
+                            row_element,
+                        )
+                except:
+                    pass
+
+                max_retries = 3
+                success = False
+                last_error_message = "Sin detalle"
+                last_attempt_number = 0
+                completed_detail_indexes = set()
+                detail_plan_indexes = None
+                detail_entries_by_index = {}
+                row_document_type = ""
+
+                for attempt in range(max_retries):
+                    if not self._wait_if_paused():
+                        break
+
+                    url_before_open_pdf = ""
+                    current_row_key = ""
+                    target_identity = ""
+                    try:
+                        self._close_extra_windows(main_window)
+                        prefix_msg = f"Intento {attempt + 1}" if attempt > 0 else "Procesando"
+                        self.log(f"{prefix_msg} fila #{i}...", "INFO")
+
+                        current_rows = self._get_table_rows()
+                        if i >= len(current_rows):
+                            break
+                        current_row = current_rows[i]
+
+                        btn_ver_1 = current_row.find_element(By.XPATH, ".//*[contains(text(), 'Ver') or contains(@class, 'view')]")
+                        row_parts = self._extract_verdetalle_parts(btn_ver_1)
+                        current_row_key = row_parts.get("key", "")
+                        if current_row_key and last_row_key and current_row_key == last_row_key and i > 0:
+                            raise Exception("Se detecto la misma fila que la anterior; reintentando para evitar duplicado")
+
+                        row_document_type = self._extract_row_document_type(current_row, row_parts) or row_parts.get("tipo", "")
+                        normalized_document_type = self._normalize_document_type(row_document_type)
+                        modal_signature_before = self._get_modal_detail_signature()
+
+                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn_ver_1)
+                        if not self._sleep_with_pause(0.5):
+                            break
+                        try:
+                            btn_ver_1.click()
+                        except:
+                            self.driver.execute_script("arguments[0].click();", btn_ver_1)
+
+                        try:
+                            WebDriverWait(self.driver, 10).until(
+                                lambda d: self._get_modal_detail_signature() != modal_signature_before
+                            )
+                        except TimeoutException:
+                            pass
+
+                        modal_buttons, btn_ver_2_xpath = self._find_modal_view_buttons(timeout=8)
+                        modal_entries = self._get_modal_detail_entries()
+
+                        if detail_plan_indexes is None:
+                            if "certificado" in normalized_document_type:
+                                detail_plan_indexes = [0]
+                                self.log(
+                                    f"Fila #{i}: tipo '{row_document_type or 'Documento'}'. Se descargara solo el primer detalle.",
+                                    "INFO",
+                                )
+                            else:
+                                detail_plan_indexes = list(range(len(modal_buttons)))
+                                self.log(
+                                    f"Fila #{i}: tipo '{row_document_type or 'Documento'}'. Se descargaran todos los detalles ({len(detail_plan_indexes)}).",
+                                    "INFO",
+                                )
+
+                            if not detail_plan_indexes:
+                                raise TimeoutException("No se encontraron detalles para descargar en el modal")
+
+                            if max(detail_plan_indexes) >= len(modal_buttons):
+                                raise TimeoutException("No se encontraron suficientes enlaces 'Ver' en el modal")
+
+                            detail_entries_by_index = {}
+                            for detail_index in detail_plan_indexes:
+                                info = f"Detalle {detail_index + 1}"
+                                if detail_index < len(modal_entries) and isinstance(modal_entries[detail_index], dict):
+                                    info = str(modal_entries[detail_index].get("info") or info).strip() or info
+                                detail_entries_by_index[detail_index] = info
+
+                        use_current_modal = True
+
+                        for detail_index in detail_plan_indexes:
+                            if not self._wait_if_paused():
+                                break
+                            if detail_index in completed_detail_indexes:
+                                continue
+
+                            if not use_current_modal:
+                                current_rows = self._get_table_rows()
+                                if i >= len(current_rows):
+                                    raise Exception("La fila ya no esta visible para reabrir el detalle")
+                                current_row = current_rows[i]
+                                btn_ver_1 = current_row.find_element(By.XPATH, ".//*[contains(text(), 'Ver') or contains(@class, 'view')]")
+
+                                modal_signature_before = self._get_modal_detail_signature()
+                                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn_ver_1)
+                                if not self._sleep_with_pause(0.5):
+                                    break
+                                try:
+                                    btn_ver_1.click()
+                                except Exception:
+                                    self.driver.execute_script("arguments[0].click();", btn_ver_1)
+
+                                try:
+                                    WebDriverWait(self.driver, 10).until(
+                                        lambda d: self._get_modal_detail_signature() != modal_signature_before
+                                    )
+                                except TimeoutException:
+                                    pass
+
+                                modal_buttons, btn_ver_2_xpath = self._find_modal_view_buttons(timeout=8)
+                                modal_entries = self._get_modal_detail_entries()
+                                if detail_index < len(modal_entries) and isinstance(modal_entries[detail_index], dict):
+                                    detail_entries_by_index[detail_index] = (
+                                        str(modal_entries[detail_index].get("info") or detail_entries_by_index.get(detail_index, f"Detalle {detail_index + 1}")).strip()
+                                        or detail_entries_by_index.get(detail_index, f"Detalle {detail_index + 1}")
+                                    )
+
+                            use_current_modal = False
+
+                            if detail_index >= len(modal_buttons):
+                                raise Exception(f"No se encontro el detalle {detail_index + 1} en el modal")
+
+                            btn_ver_2 = modal_buttons[detail_index]
+                            detail_label = detail_entries_by_index.get(detail_index, f"Detalle {detail_index + 1}")
+                            nombre_archivo = self._build_unique_filename(i, btn_ver_1, detail_index)
+
+                            handles_before = set(self.driver.window_handles)
+                            try:
+                                url_before_open_pdf = self.driver.current_url
+                            except Exception:
+                                pass
+
+                            link_href = ""
+                            try:
+                                link_href = (btn_ver_2.get_attribute("href") or "").strip()
+                            except Exception:
+                                link_href = ""
+
+                            resolved_href = ""
+                            if link_href:
+                                try:
+                                    resolved_href = (
+                                        self.driver.execute_script(
+                                            "try { return new URL(arguments[0], window.location.href).href; } catch (e) { return arguments[0] || ''; }",
+                                            link_href,
+                                        )
+                                        or ""
+                                    ).strip()
+                                except Exception:
+                                    resolved_href = link_href
+
+                            if resolved_href:
+                                target_identity = f"{current_row_key}|{resolved_href}".strip("|")
+                            elif current_row_key:
+                                target_identity = f"{current_row_key}|detalle_{detail_index + 1}"
+                            if position > 0 and target_identity and target_identity == last_target_identity:
+                                raise Exception("Se detecto el mismo documento que la fila previa; reintentando")
+
+                            if resolved_href.lower().startswith(("http://", "https://")):
+                                self.driver.execute_script("window.open(arguments[0], '_blank', 'noopener,noreferrer');", resolved_href)
+                            else:
+                                if btn_ver_2_xpath:
+                                    try:
+                                        refreshed_buttons = self.driver.find_elements(By.XPATH, btn_ver_2_xpath)
+                                        visible_buttons = [button for button in refreshed_buttons if button.is_displayed()]
+                                        if detail_index < len(visible_buttons):
+                                            btn_ver_2 = visible_buttons[detail_index]
+                                    except Exception:
+                                        pass
+                                try:
+                                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn_ver_2)
+                                except Exception:
+                                    pass
+                                try:
+                                    btn_ver_2.click()
+                                except Exception:
+                                    self.driver.execute_script("arguments[0].click();", btn_ver_2)
+
+                            opened_new_window = False
+                            try:
+                                wait.until(lambda d: len(d.window_handles) > len(handles_before))
+                                opened_new_window = True
+                            except TimeoutException:
+                                current_after_open = ""
+                                try:
+                                    current_after_open = self.driver.current_url
+                                except Exception:
+                                    current_after_open = ""
+
+                                if (
+                                    url_before_open_pdf
+                                    and current_after_open
+                                    and current_after_open != url_before_open_pdf
+                                    and current_after_open.lower().startswith(("http://", "https://"))
+                                ):
+                                    self.driver.get(url_before_open_pdf)
+                                    WebDriverWait(self.driver, 20).until(lambda d: len(self._get_table_rows()) > 0)
+                                    handles_before = set(self.driver.window_handles)
+                                    self.driver.execute_script(
+                                        "window.open(arguments[0], '_blank', 'noopener,noreferrer');",
+                                        current_after_open,
+                                    )
+                                    wait.until(lambda d: len(d.window_handles) > len(handles_before))
+                                    opened_new_window = True
+                                else:
+                                    WebDriverWait(self.driver, 25).until(
+                                        lambda d: len(d.window_handles) > len(handles_before)
+                                        or self._is_pdf_context_visible()
+                                        or (url_before_open_pdf and d.current_url != url_before_open_pdf)
+                                    )
+                                    opened_new_window = len(self.driver.window_handles) > len(handles_before)
+
+                            if opened_new_window:
+                                new_handles = [h for h in self.driver.window_handles if h not in handles_before]
+                                if new_handles:
+                                    self.driver.switch_to.window(new_handles[-1])
+                                else:
+                                    for handle in self.driver.window_handles:
+                                        if handle != main_window:
+                                            self.driver.switch_to.window(handle)
+                                            break
+                                self._install_browser_close_warning()
+
+                            current_open_url = ""
+                            try:
+                                current_open_url = (self.driver.current_url or "").strip()
+                            except Exception:
+                                current_open_url = ""
+
+                            if current_open_url:
+                                if current_row_key:
+                                    target_identity = f"{current_row_key}|{current_open_url}"
+                                elif not target_identity:
+                                    target_identity = current_open_url
+
+                            if position > 0 and target_identity and target_identity == last_target_identity:
+                                raise Exception("Se detecto el mismo documento abierto que la fila previa; reintentando")
+
+                            self.log(f"Esperando que el PDF termine de cargar ({detail_label})...", "WAIT")
+                            pdf_source = self._wait_for_pdf_ready(timeout=50)
+                            if pdf_source is None:
+                                raise Exception(f"El PDF no cargo a tiempo para {detail_label}")
+
+                            initial_files = set(os.listdir(self._active_download_dir()))
+                            started = self._start_pdf_download(pdf_source, nombre_archivo)
+                            if not started:
+                                raise Exception(f"No fue posible iniciar la descarga de {detail_label}")
+
+                            filename = self._wait_for_download(
+                                initial_files,
+                                timeout=50,
+                                expected_name=nombre_archivo,
+                            )
+
+                            if self.driver.current_window_handle == main_window:
+                                if url_before_open_pdf and self.driver.current_url != url_before_open_pdf:
+                                    self.driver.get(url_before_open_pdf)
+                                    WebDriverWait(self.driver, 20).until(lambda d: len(self._get_table_rows()) > 0)
+                            self._close_extra_windows(main_window)
+                            if not self._sleep_with_pause(0.8):
+                                break
+
+                            if filename:
+                                file_path = os.path.join(self._active_download_dir(), filename)
+                                if not self._is_valid_pdf_file(file_path):
+                                    raise Exception(f"Se descargo un archivo invalido para {detail_label}")
+                                self.log(f"Guardado: {filename}", "SUCCESS")
+                                if target_identity:
+                                    last_target_identity = target_identity
+                                self.stats["success"] += 1
+                                completed_detail_indexes.add(detail_index)
+                                completed_count = len(completed_detail_indexes)
+                                total_count = len(detail_plan_indexes)
+                                self.after(
+                                    0,
+                                    lambda idx=i, done=completed_count, total=total_count: self._refresh_stats_labels(
+                                        f"Fila {idx} detalle {done}/{total}"
+                                    ),
+                                )
+                                continue
+
+                            raise Exception(f"Timeout de descarga en {detail_label}")
+
+                        if detail_plan_indexes and len(completed_detail_indexes) == len(detail_plan_indexes):
+                            try:
+                                fresh_rows = self._get_table_rows()
+                                if i < len(fresh_rows):
+                                    self.driver.execute_script(
+                                        "arguments[0].style.backgroundColor = '#E2EFDA'; arguments[0].style.border = 'none';",
+                                        fresh_rows[i],
+                                    )
+                            except Exception:
+                                pass
+
+                            if current_row_key:
+                                last_row_key = current_row_key
+                            if i in self.failed_rows:
+                                self.failed_rows = [row for row in self.failed_rows if row != i]
+                            self.after(0, lambda idx=i: self._refresh_stats_labels(f"Fila {idx} completada"))
+                            success = True
+                            break
+
+                        raise Exception(
+                            f"Quedaron detalles pendientes por descargar ({len(completed_detail_indexes)}/{len(detail_plan_indexes or [])})"
+                        )
+
+                    except Exception as e:
+                        last_error_message = str(e)
+                        last_attempt_number = attempt + 1
+                        self.log(f"Error temporal: {last_error_message}", "ERROR")
+                        self._close_extra_windows(main_window)
+
+                        # Si el fallo ocurrio en la vista PDF, regresar a la tabla para evitar cascada de errores.
+                        if url_before_open_pdf:
+                            try:
+                                current_url = self.driver.current_url
+                            except Exception:
+                                current_url = ""
+
+                            if current_url != url_before_open_pdf:
+                                try:
+                                    self.driver.get(url_before_open_pdf)
+                                    WebDriverWait(self.driver, 20).until(lambda d: len(self._get_table_rows()) > 0)
+                                except Exception:
+                                    try:
+                                        self.driver.back()
+                                        WebDriverWait(self.driver, 20).until(lambda d: len(self._get_table_rows()) > 0)
+                                    except Exception:
+                                        pass
+                        if not self._sleep_with_pause(1.5):
+                            break
+
+                if not success:
+                    self.log(f"Fallo definitivo en fila {i}.", "ERROR")
+                    self.stats["error"] += 1
+                    if i not in self.failed_rows:
+                        self.failed_rows.append(i)
+                    self._capture_failure_evidence(i, max(last_attempt_number, 1), last_error_message)
+                    self.after(0, lambda idx=i: self._refresh_stats_labels(f"Fila {idx} con error"))
+                    try:
+                        fresh_rows = self._get_table_rows()
+                        if i < len(fresh_rows):
+                            self.driver.execute_script("arguments[0].style.backgroundColor = '#FCE4D6';", fresh_rows[i])
+                    except:
+                        pass
+
+                done_progress = (position + 1) / total_data_rows
+                self.after(0, lambda v=done_progress: self.progress.set(min(1, v)))
+
+            try:
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+            except:
+                pass
+
+            pending_failed = len(sorted(set(self.failed_rows)))
+            msg_final = (
+                f"Terminado.\n\nOK: {self.stats['success']}\nErrores: {self.stats['error']}\n"
+                f"Fallidos pendientes: {pending_failed}"
+            )
+            self.log(msg_final, "SUCCESS")
+            self.after(0, lambda: self._refresh_stats_labels("Proceso finalizado"))
+            self._show_info_threadsafe("Reporte Final", msg_final)
+
+        except Exception as e:
+            self.log(f"Error critico: {str(e)}", "ERROR")
+            self.after(0, lambda: self._refresh_stats_labels("Error critico"))
+        finally:
+            self.is_running = False
+            self.is_paused = False
+            self.after(0, lambda: self.toggle_ui_state(working=False))
+
+if __name__ == "__main__":
+    app = GobiernoPDFDownloader()
+    app.mainloop()

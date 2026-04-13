@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+build/
+dist/
+
+Descargas_PDF/
+_evidencias_fallos/
+
+config_descargas.json
+historial_actividad.txt
+
+*.log
+*.tmp
+*.bak
