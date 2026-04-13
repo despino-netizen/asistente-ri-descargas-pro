@@ -60,7 +60,7 @@ CONFIG_FILE = os.path.join(APP_DATA_DIR, "config_descargas.json")
 LOG_FILE = os.path.join(APP_DATA_DIR, "historial_actividad.txt")
 DEFAULT_DOWNLOAD_DIR = _get_default_download_dir()
 APP_NAME = "Asistente RI Descargas Pro"
-APP_VERSION = "3.2.1"
+APP_VERSION = "3.3.0"
 APP_VERSION_LABEL = f"V{APP_VERSION}"
 DEFAULT_EXE_NAME = "AsistenteRIDescargasPro.exe"
 GITHUB_RELEASE_REPOSITORY = "despino-netizen/asistente-ri-descargas-pro"
@@ -68,24 +68,24 @@ GITHUB_RELEASE_ASSET_NAME = DEFAULT_EXE_NAME
 GITHUB_API_VERSION = "2026-03-10"
 
 # Theme visual
-APP_BG = "#EEF3FB"
-CARD_BG = "#FFFFFF"
-CARD_BORDER = "#D7E0EC"
-SURFACE_SOFT = "#E4ECFB"
-SURFACE_SOFT_2 = "#DDE7FA"
-PRIMARY = "#0A4DA3"
-PRIMARY_HOVER = "#083D82"
-SUCCESS = "#0E8C4A"
-SUCCESS_HOVER = "#0B6E3A"
-WARN = "#3E7FD1"
-WARN_HOVER = "#2F68AF"
-DANGER = "#B42318"
-DANGER_HOVER = "#8E1C12"
-TEXT_MAIN = "#13233A"
-TEXT_MUTED = "#5A6B85"
-INPUT_BG = "#F7F9FD"
-LOG_BG = "#0B1322"
-LOG_BORDER = "#223754"
+APP_BG = "#F4EFE8"
+CARD_BG = "#FFFDF8"
+CARD_BORDER = "#E8DDD0"
+SURFACE_SOFT = "#F2E8DA"
+SURFACE_SOFT_2 = "#E9DCC8"
+PRIMARY = "#1D5A55"
+PRIMARY_HOVER = "#164641"
+SUCCESS = "#2E7B58"
+SUCCESS_HOVER = "#265F46"
+WARN = "#C88B31"
+WARN_HOVER = "#A67224"
+DANGER = "#B14C38"
+DANGER_HOVER = "#903C2C"
+TEXT_MAIN = "#1E2B2A"
+TEXT_MUTED = "#6F6A63"
+INPUT_BG = "#FBF7F0"
+LOG_BG = "#13201F"
+LOG_BORDER = "#2C4441"
 
 
 class GobiernoPDFDownloader(ctk.CTk):
@@ -164,6 +164,28 @@ class GobiernoPDFDownloader(ctk.CTk):
         folder_path = os.path.expandvars(os.path.expanduser(folder_path))
         return os.path.abspath(folder_path)
 
+    def _format_path_preview(self, folder_path, max_length=74):
+        normalized = self._normalize_folder_path(folder_path)
+        if len(normalized) <= max_length:
+            return normalized
+
+        drive, rest = os.path.splitdrive(normalized)
+        tail_length = max(28, max_length - len(drive) - 7)
+        tail = rest[-tail_length:].lstrip("\\/")
+        return f"{drive}\\...\\{tail}" if drive else f"...\\{tail}"
+
+    def _refresh_path_preview(self):
+        preview_text = self._format_path_preview(self.download_dir.get())
+        helper_text = "La carpeta se guarda automaticamente y se recuerda al volver a abrir."
+        try:
+            self.lbl_dir.configure(text=preview_text)
+        except Exception:
+            pass
+        try:
+            self.lbl_subtitle.configure(text=helper_text)
+        except Exception:
+            pass
+
     def save_config(self):
         """Guarda la configuraciÃ³n actual."""
         current_folder = self._normalize_folder_path(self.download_dir.get())
@@ -183,6 +205,7 @@ class GobiernoPDFDownloader(ctk.CTk):
         os.makedirs(normalized_dir, exist_ok=True)
         self.run_download_dir = None
         self.download_dir.set(normalized_dir)
+        self._refresh_path_preview()
 
         if persist:
             self.save_config()
@@ -2667,6 +2690,813 @@ Remove-Item -LiteralPath $PSCommandPath -Force
             self.is_running = False
             self.is_paused = False
             self.after(0, lambda: self.toggle_ui_state(working=False))
+
+    def _setup_ui(self):
+        self.grid_columnconfigure(0, weight=0)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self.configure(fg_color=APP_BG)
+
+        self._build_sidebar_modern()
+        self._build_main_surface_modern()
+        self._build_hero_modern()
+        self._build_workspace_modern()
+        self._build_log_modern()
+        self._build_footer_modern()
+
+        self._refresh_stats_labels("Esperando inicio")
+        self._update_retry_button_state()
+        self._refresh_path_preview()
+        self.log("Bienvenido. Configuracion cargada correctamente.", "INFO", persist=False)
+        self._sync_progress_ring()
+
+    def _build_sidebar_modern(self):
+        self.sidebar_frame = ctk.CTkFrame(
+            self,
+            width=238,
+            corner_radius=0,
+            fg_color="#173835",
+            border_width=0,
+        )
+        self.sidebar_frame.grid(row=0, column=0, sticky="ns")
+        self.sidebar_frame.grid_propagate(False)
+        self.sidebar_frame.grid_rowconfigure(5, weight=1)
+
+        self.sidebar_brand = ctk.CTkFrame(
+            self.sidebar_frame,
+            fg_color="#204A46",
+            corner_radius=0,
+            height=164,
+        )
+        self.sidebar_brand.grid(row=0, column=0, sticky="ew")
+        self.sidebar_brand.grid_propagate(False)
+
+        ctk.CTkLabel(
+            self.sidebar_brand,
+            text="Centro RI",
+            font=("Segoe UI", 11, "bold"),
+            text_color="#E4D7C1",
+        ).pack(anchor="w", padx=18, pady=(18, 4))
+
+        self.lbl_sidebar_title = ctk.CTkLabel(
+            self.sidebar_brand,
+            text="Descargas\ninteligentes",
+            font=("Bahnschrift SemiBold", 28),
+            text_color="#FFF8EC",
+            justify="left",
+        )
+        self.lbl_sidebar_title.pack(anchor="w", padx=18)
+
+        ctk.CTkLabel(
+            self.sidebar_brand,
+            text="Interfaz clara, seguimiento en vivo y menos pasos para cada usuario.",
+            wraplength=180,
+            justify="left",
+            font=("Segoe UI", 12),
+            text_color="#C9D7D4",
+        ).pack(anchor="w", padx=18, pady=(8, 0))
+
+        self.nav_dashboard = ctk.CTkButton(
+            self.sidebar_frame,
+            text="1  Preparar carpeta",
+            command=lambda: self.entry_dir.focus_set(),
+            height=42,
+            fg_color="#2A5B56",
+            hover_color="#346963",
+            text_color="#FFF9EF",
+            corner_radius=14,
+            font=("Segoe UI", 13, "bold"),
+            anchor="w",
+        )
+        self.nav_dashboard.grid(row=1, column=0, sticky="ew", padx=16, pady=(18, 8))
+
+        self.nav_history = ctk.CTkButton(
+            self.sidebar_frame,
+            text="2  Abrir y ejecutar",
+            command=lambda: self.btn_start.focus_set(),
+            height=40,
+            fg_color="#214A46",
+            hover_color="#295752",
+            text_color="#E8E0D2",
+            corner_radius=14,
+            font=("Segoe UI", 13, "bold"),
+            anchor="w",
+        )
+        self.nav_history.grid(row=2, column=0, sticky="ew", padx=16, pady=8)
+
+        self.nav_settings = ctk.CTkButton(
+            self.sidebar_frame,
+            text="3  Resolver pendientes",
+            command=lambda: self.btn_retry_failed.focus_set(),
+            height=40,
+            fg_color="#214A46",
+            hover_color="#295752",
+            text_color="#E8E0D2",
+            corner_radius=14,
+            font=("Segoe UI", 13, "bold"),
+            anchor="w",
+        )
+        self.nav_settings.grid(row=3, column=0, sticky="ew", padx=16, pady=8)
+
+        self.sidebar_support = ctk.CTkFrame(
+            self.sidebar_frame,
+            fg_color="#F0E2CF",
+            corner_radius=18,
+            border_width=0,
+        )
+        self.sidebar_support.grid(row=4, column=0, sticky="ew", padx=16, pady=(18, 0))
+
+        ctk.CTkLabel(
+            self.sidebar_support,
+            text="Como se usa",
+            font=("Segoe UI", 12, "bold"),
+            text_color="#3E3A35",
+        ).pack(anchor="w", padx=14, pady=(14, 4))
+
+        ctk.CTkLabel(
+            self.sidebar_support,
+            text="Abre el portal, inicia sesion, coloca la tabla en 100 registros y ejecuta la descarga.",
+            wraplength=178,
+            justify="left",
+            font=("Segoe UI", 11),
+            text_color="#5D564F",
+        ).pack(anchor="w", padx=14, pady=(0, 14))
+
+        self.sidebar_hint = ctk.CTkLabel(
+            self.sidebar_frame,
+            text="Pensado para verse simple desde el primer vistazo.",
+            font=("Segoe UI", 10, "bold"),
+            text_color="#AFC0BC",
+            wraplength=180,
+            justify="left",
+        )
+        self.sidebar_hint.grid(row=6, column=0, padx=16, pady=(10, 16), sticky="sw")
+
+    def _build_main_surface_modern(self):
+        self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_frame.grid(row=0, column=1, sticky="nsew")
+        self.main_frame.grid_columnconfigure(0, weight=1)
+        self.main_frame.grid_rowconfigure(2, weight=1)
+
+        self.bg_orb_left = ctk.CTkFrame(
+            self.main_frame,
+            width=260,
+            height=260,
+            corner_radius=130,
+            fg_color="#E8DBC8",
+        )
+        self.bg_orb_left.place(x=-110, y=102)
+        self.bg_orb_left.lower()
+
+        self.bg_orb_center = ctk.CTkFrame(
+            self.main_frame,
+            width=180,
+            height=180,
+            corner_radius=90,
+            fg_color="#E4EBDC",
+        )
+        self.bg_orb_center.place(relx=0.53, y=38, anchor="n")
+        self.bg_orb_center.lower()
+
+        self.bg_orb_right = ctk.CTkFrame(
+            self.main_frame,
+            width=320,
+            height=320,
+            corner_radius=160,
+            fg_color="#E9E0D2",
+        )
+        self.bg_orb_right.place(relx=1.0, x=-64, y=456, anchor="ne")
+        self.bg_orb_right.lower()
+
+    def _build_hero_modern(self):
+        self.hero_frame = ctk.CTkFrame(
+            self.main_frame,
+            corner_radius=24,
+            fg_color=CARD_BG,
+            border_color=CARD_BORDER,
+            border_width=1,
+        )
+        self.hero_frame.grid(row=0, column=0, sticky="ew", padx=22, pady=(20, 14))
+        self.hero_frame.grid_columnconfigure(0, weight=1)
+        self.hero_frame.grid_columnconfigure(1, weight=0)
+
+        self.lbl_title = ctk.CTkLabel(
+            self.hero_frame,
+            text="Centro de descargas automaticas",
+            font=("Bahnschrift SemiBold", 35),
+            text_color=TEXT_MAIN,
+        )
+        self.lbl_title.grid(row=0, column=0, padx=24, pady=(22, 6), sticky="w")
+
+        self.lbl_subtitle = ctk.CTkLabel(
+            self.hero_frame,
+            text="La carpeta se guarda automaticamente y se recuerda al volver a abrir.",
+            wraplength=650,
+            justify="left",
+            font=("Segoe UI", 13),
+            text_color=TEXT_MUTED,
+        )
+        self.lbl_subtitle.grid(row=1, column=0, padx=24, sticky="w")
+
+        self.lbl_dir = ctk.CTkLabel(
+            self.hero_frame,
+            text=self._format_path_preview(self.download_dir.get()),
+            font=("Consolas", 11, "bold"),
+            text_color="#4E4B45",
+            fg_color=SURFACE_SOFT,
+            corner_radius=999,
+            padx=14,
+            pady=7,
+        )
+        self.lbl_dir.grid(row=2, column=0, padx=24, pady=(16, 16), sticky="w")
+
+        self.hero_actions = ctk.CTkFrame(self.hero_frame, fg_color="transparent")
+        self.hero_actions.grid(row=0, column=1, rowspan=3, padx=22, pady=22, sticky="ne")
+        self.hero_actions.grid_columnconfigure(0, weight=1)
+
+        self.btn_update = ctk.CTkButton(
+            self.hero_actions,
+            text="Buscar actualizacion",
+            command=lambda: self.start_update_check_thread(manual=True),
+            width=176,
+            height=38,
+            fg_color=PRIMARY,
+            hover_color=PRIMARY_HOVER,
+            text_color="#FFF8EF",
+            corner_radius=999,
+            font=("Segoe UI", 12, "bold"),
+        )
+        self.btn_update.grid(row=0, column=0, sticky="ew")
+
+        self.lbl_version = ctk.CTkLabel(
+            self.hero_actions,
+            text=APP_VERSION_LABEL,
+            font=("Segoe UI", 12, "bold"),
+            text_color="#4E4B45",
+            fg_color=SURFACE_SOFT,
+            corner_radius=999,
+            padx=14,
+            pady=6,
+        )
+        self.lbl_version.grid(row=1, column=0, pady=(10, 10), sticky="e")
+
+        self.lbl_runtime_status = ctk.CTkLabel(
+            self.hero_actions,
+            text="LISTO",
+            font=("Segoe UI", 12, "bold"),
+            fg_color=PRIMARY,
+            corner_radius=999,
+            padx=14,
+            pady=6,
+            text_color="#FFF8EF",
+        )
+        self.lbl_runtime_status.grid(row=2, column=0, sticky="e")
+
+        self.header_activity = ctk.CTkProgressBar(
+            self.hero_frame,
+            height=6,
+            corner_radius=999,
+            progress_color=PRIMARY,
+            fg_color="#E6DDCF",
+        )
+        self.header_activity.grid(row=3, column=0, columnspan=2, sticky="ew", padx=24, pady=(0, 18))
+        self.header_activity.configure(mode="indeterminate")
+        self.header_activity.stop()
+
+    def _build_workspace_modern(self):
+        self.content_grid = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.content_grid.grid(row=1, column=0, sticky="nsew", padx=22, pady=(0, 10))
+        self.content_grid.grid_columnconfigure(0, weight=8)
+        self.content_grid.grid_columnconfigure(1, weight=5)
+        self.content_grid.grid_rowconfigure(1, weight=1)
+
+        self.header_frame = ctk.CTkFrame(
+            self.content_grid,
+            corner_radius=22,
+            fg_color=CARD_BG,
+            border_color=CARD_BORDER,
+            border_width=1,
+        )
+        self.header_frame.grid(row=0, column=0, sticky="ew", padx=(0, 12), pady=(0, 12))
+        self.header_frame.grid_columnconfigure(0, weight=1)
+        self.header_frame.grid_columnconfigure(1, weight=0)
+
+        ctk.CTkLabel(
+            self.header_frame,
+            text="Destino de guardado",
+            font=("Segoe UI", 18, "bold"),
+            text_color=TEXT_MAIN,
+        ).grid(row=0, column=0, padx=20, pady=(18, 6), sticky="w")
+
+        ctk.CTkLabel(
+            self.header_frame,
+            text="Cada ejecucion crea su propia carpeta de trabajo para mantener todo ordenado.",
+            font=("Segoe UI", 12),
+            text_color=TEXT_MUTED,
+            wraplength=540,
+            justify="left",
+        ).grid(row=1, column=0, columnspan=2, padx=20, pady=(0, 12), sticky="w")
+
+        self.entry_dir = ctk.CTkEntry(
+            self.header_frame,
+            textvariable=self.download_dir,
+            height=46,
+            fg_color=INPUT_BG,
+            border_color="#D8CBBC",
+            border_width=1,
+            text_color=TEXT_MAIN,
+            font=("Consolas", 12),
+            corner_radius=14,
+        )
+        self.entry_dir.grid(row=2, column=0, padx=(20, 12), pady=(0, 18), sticky="ew")
+
+        self.btn_folder = ctk.CTkButton(
+            self.header_frame,
+            text="Cambiar carpeta",
+            command=self._select_folder,
+            width=150,
+            height=44,
+            fg_color="#314B48",
+            hover_color="#243836",
+            text_color="#FFF8EF",
+            corner_radius=14,
+            font=("Segoe UI", 12, "bold"),
+        )
+        self.btn_folder.grid(row=2, column=1, padx=(0, 18), pady=(0, 18), sticky="e")
+
+        self.controls_frame = ctk.CTkFrame(
+            self.content_grid,
+            fg_color=CARD_BG,
+            border_color=CARD_BORDER,
+            border_width=1,
+            corner_radius=22,
+        )
+        self.controls_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 12))
+        self.controls_frame.grid_columnconfigure(0, weight=4)
+        self.controls_frame.grid_columnconfigure(1, weight=5)
+
+        ctk.CTkLabel(
+            self.controls_frame,
+            text="Motor de la sesion",
+            font=("Segoe UI", 18, "bold"),
+            text_color=TEXT_MAIN,
+        ).grid(row=0, column=0, columnspan=2, padx=20, pady=(18, 4), sticky="w")
+
+        ctk.CTkLabel(
+            self.controls_frame,
+            text="Todo esta organizado para que una persona entienda donde empieza, como avanza y que hacer si algo falla.",
+            font=("Segoe UI", 12),
+            text_color=TEXT_MUTED,
+            wraplength=720,
+            justify="left",
+        ).grid(row=1, column=0, columnspan=2, padx=20, pady=(0, 14), sticky="w")
+
+        self.console_frame = ctk.CTkFrame(self.controls_frame, fg_color="transparent")
+        self.console_frame.grid(row=2, column=0, columnspan=2, sticky="nsew")
+        self.console_frame.grid_columnconfigure(0, weight=4)
+        self.console_frame.grid_columnconfigure(1, weight=5)
+
+        self.progress_shell = ctk.CTkFrame(
+            self.console_frame,
+            fg_color=INPUT_BG,
+            corner_radius=20,
+            border_width=0,
+        )
+        self.progress_shell.grid(row=0, column=0, padx=(18, 10), pady=(0, 18), sticky="nsew")
+        self.progress_shell.grid_columnconfigure(0, weight=1)
+
+        self.progress_ring_host = ctk.CTkFrame(self.progress_shell, fg_color="transparent")
+        self.progress_ring_host.grid(row=0, column=0, pady=(18, 8), padx=14)
+
+        self.progress_ring_canvas = tk.Canvas(
+            self.progress_ring_host,
+            width=220,
+            height=220,
+            bd=0,
+            highlightthickness=0,
+            bg=INPUT_BG,
+        )
+        self.progress_ring_canvas.pack()
+        self.progress_ring_canvas.create_oval(24, 24, 196, 196, outline="#DDD1C4", width=14)
+        self.progress_ring_arc = self.progress_ring_canvas.create_arc(
+            24,
+            24,
+            196,
+            196,
+            start=90,
+            extent=0,
+            style="arc",
+            outline=PRIMARY,
+            width=14,
+        )
+        self.progress_ring_canvas.create_text(
+            110,
+            78,
+            text="PROGRESO",
+            fill="#7D756D",
+            font=("Segoe UI", 10, "bold"),
+        )
+        self.progress_ring_text = self.progress_ring_canvas.create_text(
+            110,
+            113,
+            text="0%",
+            fill=TEXT_MAIN,
+            font=("Bahnschrift SemiBold", 26),
+        )
+        self.progress_ring_canvas.create_text(
+            110,
+            145,
+            text="Seguimiento visual\nen tiempo real",
+            fill="#7D756D",
+            font=("Segoe UI", 10),
+            justify="center",
+        )
+
+        self.progress = ctk.CTkProgressBar(
+            self.progress_shell,
+            height=10,
+            corner_radius=999,
+            progress_color=PRIMARY,
+            fg_color="#DDD1C4",
+        )
+        self.progress.set(0)
+        self.progress.grid(row=1, column=0, padx=18, pady=(2, 18), sticky="ew")
+
+        self.action_subframe = ctk.CTkFrame(self.console_frame, fg_color="transparent")
+        self.action_subframe.grid(row=0, column=1, padx=(10, 18), pady=(0, 18), sticky="nsew")
+        self.action_subframe.grid_columnconfigure((0, 1), weight=1)
+
+        ctk.CTkLabel(
+            self.action_subframe,
+            text="Acciones principales",
+            font=("Segoe UI", 14, "bold"),
+            text_color=TEXT_MAIN,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(4, 4))
+
+        ctk.CTkLabel(
+            self.action_subframe,
+            text="Sigue el orden natural del flujo: abrir portal, iniciar sesion y comenzar el procesamiento.",
+            font=("Segoe UI", 12),
+            text_color=TEXT_MUTED,
+            wraplength=420,
+            justify="left",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 14))
+
+        btn_font = ("Segoe UI", 13, "bold")
+        btn_height = 44
+
+        self.btn_browser = ctk.CTkButton(
+            self.action_subframe,
+            text="1. Abrir portal",
+            command=self.launch_browser,
+            height=btn_height,
+            corner_radius=14,
+            font=btn_font,
+            fg_color=PRIMARY,
+            hover_color=PRIMARY_HOVER,
+            text_color="#FFF8EF",
+        )
+        self.btn_browser.grid(row=2, column=0, padx=(0, 8), pady=(0, 10), sticky="ew")
+
+        self.btn_start = ctk.CTkButton(
+            self.action_subframe,
+            text="2. Iniciar descarga",
+            command=self.start_scraping_thread,
+            state="disabled",
+            height=btn_height,
+            corner_radius=14,
+            font=btn_font,
+            fg_color=PRIMARY,
+            hover_color=PRIMARY_HOVER,
+            text_color="#FFF8EF",
+        )
+        self.btn_start.grid(row=2, column=1, padx=(8, 0), pady=(0, 10), sticky="ew")
+
+        self.btn_pause = ctk.CTkButton(
+            self.action_subframe,
+            text="Pausar",
+            command=self.toggle_pause,
+            state="disabled",
+            height=btn_height,
+            corner_radius=14,
+            font=btn_font,
+            fg_color=WARN,
+            hover_color=WARN_HOVER,
+            text_color="#FFF8EF",
+        )
+        self.btn_pause.grid(row=3, column=0, padx=(0, 8), pady=(0, 10), sticky="ew")
+
+        self.btn_cancel = ctk.CTkButton(
+            self.action_subframe,
+            text="Cancelar",
+            command=self.stop_process,
+            state="disabled",
+            height=btn_height,
+            corner_radius=14,
+            font=btn_font,
+            fg_color=DANGER,
+            hover_color=DANGER_HOVER,
+            text_color="#FFF8EF",
+        )
+        self.btn_cancel.grid(row=3, column=1, padx=(8, 0), pady=(0, 10), sticky="ew")
+
+        self.btn_retry_failed = ctk.CTkButton(
+            self.action_subframe,
+            text="Reintentar fallidos (0)",
+            command=self.retry_failed_rows_thread,
+            state="disabled",
+            height=btn_height,
+            corner_radius=14,
+            font=btn_font,
+            fg_color="#344846",
+            hover_color="#253633",
+            text_color="#FFF8EF",
+        )
+        self.btn_retry_failed.grid(row=4, column=0, columnspan=2, pady=(0, 6), sticky="ew")
+
+        self.metrics_row = ctk.CTkFrame(self.content_grid, fg_color="transparent")
+        self.metrics_row.grid(row=0, column=1, sticky="ew")
+        self.metrics_row.grid_columnconfigure((0, 1), weight=1)
+
+        self.success_card = ctk.CTkFrame(
+            self.metrics_row,
+            fg_color="#EEF7F0",
+            border_color="#D5E8D9",
+            border_width=1,
+            corner_radius=18,
+        )
+        self.success_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        ctk.CTkLabel(
+            self.success_card,
+            text="COMPLETADOS",
+            font=("Segoe UI", 10, "bold"),
+            text_color="#5F7A68",
+        ).pack(anchor="w", padx=14, pady=(14, 2))
+        self.lbl_success = ctk.CTkLabel(
+            self.success_card,
+            text="0\narchivos",
+            font=("Bahnschrift SemiBold", 26),
+            text_color=SUCCESS,
+            justify="left",
+        )
+        self.lbl_success.pack(anchor="w", padx=14, pady=(0, 14))
+
+        self.error_card = ctk.CTkFrame(
+            self.metrics_row,
+            fg_color="#FBF0EC",
+            border_color="#EBCFC7",
+            border_width=1,
+            corner_radius=18,
+        )
+        self.error_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        ctk.CTkLabel(
+            self.error_card,
+            text="INCIDENCIAS",
+            font=("Segoe UI", 10, "bold"),
+            text_color="#84675D",
+        ).pack(anchor="w", padx=14, pady=(14, 2))
+        self.lbl_error = ctk.CTkLabel(
+            self.error_card,
+            text="0\nerrores",
+            font=("Bahnschrift SemiBold", 26),
+            text_color=DANGER,
+            justify="left",
+        )
+        self.lbl_error.pack(anchor="w", padx=14, pady=(0, 14))
+
+        self.status_panel = ctk.CTkFrame(
+            self.content_grid,
+            fg_color=CARD_BG,
+            border_color=CARD_BORDER,
+            border_width=1,
+            corner_radius=22,
+        )
+        self.status_panel.grid(row=1, column=1, sticky="nsew")
+        self.status_panel.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            self.status_panel,
+            text="Panel de claridad",
+            font=("Segoe UI", 18, "bold"),
+            text_color=TEXT_MAIN,
+        ).grid(row=0, column=0, padx=18, pady=(18, 4), sticky="w")
+
+        ctk.CTkLabel(
+            self.status_panel,
+            text="Las cifras principales, el estado actual y la guia rapida estan visibles siempre.",
+            font=("Segoe UI", 12),
+            text_color=TEXT_MUTED,
+            wraplength=360,
+            justify="left",
+        ).grid(row=1, column=0, padx=18, pady=(0, 14), sticky="w")
+
+        self.status_card = ctk.CTkFrame(
+            self.status_panel,
+            fg_color=INPUT_BG,
+            border_color="#E2D6C8",
+            border_width=1,
+            corner_radius=18,
+        )
+        self.status_card.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 12))
+        ctk.CTkLabel(
+            self.status_card,
+            text="ESTADO ACTUAL",
+            font=("Segoe UI", 10, "bold"),
+            text_color="#7A7168",
+        ).pack(anchor="w", padx=14, pady=(14, 4))
+        self.lbl_status = ctk.CTkLabel(
+            self.status_card,
+            text="Esperando inicio",
+            font=("Segoe UI", 15, "bold"),
+            text_color=TEXT_MAIN,
+            justify="left",
+            wraplength=320,
+        )
+        self.lbl_status.pack(anchor="w", padx=14, pady=(0, 14))
+
+        self.warning_frame = ctk.CTkFrame(
+            self.status_panel,
+            fg_color=SURFACE_SOFT,
+            border_color="#E2D6C8",
+            border_width=1,
+            corner_radius=18,
+        )
+        self.warning_frame.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 18))
+        ctk.CTkLabel(
+            self.warning_frame,
+            text="GUIA RAPIDA",
+            font=("Segoe UI", 10, "bold"),
+            text_color="#7A7168",
+        ).pack(anchor="w", padx=14, pady=(14, 4))
+
+        instrucciones = (
+            "1. Abre el navegador desde el panel principal.\n"
+            "2. Inicia sesion y deja visible la tabla en 100 registros.\n"
+            "3. Ejecuta la descarga y vigila el log en vivo.\n"
+            "4. Usa Pausar o Reintentar si hace falta."
+        )
+        self.lbl_warning = ctk.CTkLabel(
+            self.warning_frame,
+            text=instrucciones,
+            justify="left",
+            font=("Segoe UI", 12),
+            text_color="#5E564D",
+            wraplength=340,
+        )
+        self.lbl_warning.pack(padx=14, pady=(0, 14), anchor="w")
+
+    def _build_log_modern(self):
+        self.log_frame = ctk.CTkFrame(
+            self.main_frame,
+            corner_radius=22,
+            fg_color="#162220",
+            border_color="#2A3F3D",
+            border_width=1,
+        )
+        self.log_frame.grid(row=2, column=0, sticky="nsew", padx=22, pady=(0, 12))
+        self.log_frame.grid_rowconfigure(1, weight=1)
+        self.log_frame.grid_columnconfigure(0, weight=1)
+
+        self.log_header = ctk.CTkFrame(
+            self.log_frame,
+            fg_color="transparent",
+            corner_radius=0,
+            border_width=0,
+        )
+        self.log_header.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 8))
+        self.log_header.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            self.log_header,
+            text="Actividad en vivo",
+            font=("Segoe UI", 16, "bold"),
+            text_color="#FFF8EF",
+        ).grid(row=0, column=0, sticky="w")
+
+        ctk.CTkLabel(
+            self.log_header,
+            text="Cada accion del sistema aparece aqui en tiempo real.",
+            font=("Segoe UI", 11),
+            text_color="#91ACA8",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+        self.log_area = ctk.CTkTextbox(
+            self.log_frame,
+            font=("Consolas", 11),
+            state="disabled",
+            fg_color=LOG_BG,
+            text_color="#E8F0EE",
+            border_color=LOG_BORDER,
+            border_width=1,
+            corner_radius=16,
+        )
+        self.log_area.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 16))
+
+    def _build_footer_modern(self):
+        self.footer_frame = ctk.CTkFrame(self.main_frame, height=24, fg_color="transparent")
+        self.footer_frame.grid(row=3, column=0, sticky="ew", padx=22, pady=(0, 10))
+        self.footer_frame.grid_columnconfigure(0, weight=1)
+        self.footer_frame.grid_columnconfigure(1, weight=0)
+
+        self.lbl_credits = ctk.CTkLabel(
+            self.footer_frame,
+            text="Desarrollado por Dariel Espino (809) 434-2700",
+            font=("Segoe UI", 10, "bold"),
+            text_color=TEXT_MUTED,
+        )
+        self.lbl_credits.grid(row=0, column=0, sticky="w")
+
+        self.footer_note = ctk.CTkLabel(
+            self.footer_frame,
+            text="Diseno visual renovado para que todo se entienda desde el primer minuto.",
+            font=("Segoe UI", 10),
+            text_color=TEXT_MUTED,
+        )
+        self.footer_note.grid(row=0, column=1, sticky="e")
+
+    def _run_intro_reveal(self):
+        reveal_sequence = [
+            self.hero_frame,
+            self.content_grid,
+            self.log_frame,
+            self.footer_frame,
+        ]
+        for widget in reveal_sequence:
+            widget.grid_remove()
+
+        for idx, widget in enumerate(reveal_sequence):
+            self.after(90 + (idx * 110), lambda w=widget: w.grid())
+
+    def _animate_background_accents(self):
+        self._accent_tick += 1
+        phase = self._accent_tick / 16.0
+
+        try:
+            self.bg_orb_left.place(
+                x=-110 + int(10 * math.sin(phase)),
+                y=102 + int(9 * math.cos(phase * 0.8)),
+            )
+            self.bg_orb_center.place(
+                relx=0.53,
+                y=38 + int(8 * math.sin(phase * 1.1)),
+                anchor="n",
+            )
+            self.bg_orb_right.place(
+                relx=1.0,
+                x=-64 + int(12 * math.cos(phase * 0.9)),
+                y=456 + int(10 * math.sin(phase * 0.7)),
+                anchor="ne",
+            )
+        except Exception:
+            pass
+
+        self.after(95, self._animate_background_accents)
+
+    def _animate_status_chip(self):
+        self._chip_pulse_tick += 1
+
+        if self._chip_mode == "running":
+            palette = ["#1D5A55", "#256863", "#2D746F"]
+        elif self._chip_mode == "paused":
+            palette = ["#C88B31", "#D3963F", "#BE832D"]
+        elif self._chip_mode == "error":
+            palette = ["#B14C38", "#BD5944", "#A64533"]
+        elif self._chip_mode == "done":
+            palette = ["#2E7B58", "#378664", "#2A714F"]
+        else:
+            palette = ["#35514D", "#41625D", "#30504B"]
+
+        try:
+            self.lbl_runtime_status.configure(fg_color=palette[self._chip_pulse_tick % len(palette)])
+        except Exception:
+            pass
+
+        self.after(420, self._animate_status_chip)
+
+    def _refresh_stats_labels(self, status_text=None):
+        if status_text is not None:
+            self.status_text = status_text
+
+        self.lbl_success.configure(text=f"{self.stats['success']}\narchivos")
+        self.lbl_error.configure(text=f"{self.stats['error']}\nalertas")
+        self.lbl_status.configure(text=self.status_text)
+
+        chip_text = "LISTO"
+        self._chip_mode = "idle"
+        if self.is_running and self.is_paused:
+            chip_text = "PAUSADO"
+            self._chip_mode = "paused"
+        elif self.is_running:
+            chip_text = "EN PROCESO"
+            self._chip_mode = "running"
+        elif self.stats["error"] > 0 and self.stats["success"] == 0:
+            chip_text = "CON ERRORES"
+            self._chip_mode = "error"
+        elif self.stats["success"] > 0:
+            chip_text = "COMPLETADO"
+            self._chip_mode = "done"
+
+        self.lbl_runtime_status.configure(text=chip_text)
 
 if __name__ == "__main__":
     app = GobiernoPDFDownloader()
