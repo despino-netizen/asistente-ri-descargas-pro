@@ -13,7 +13,6 @@ import re
 import uuid
 import winsound
 import subprocess
-import tempfile
 import urllib.request
 import urllib.error
 
@@ -60,9 +59,10 @@ CONFIG_FILE = os.path.join(APP_DATA_DIR, "config_descargas.json")
 LOG_FILE = os.path.join(APP_DATA_DIR, "historial_actividad.txt")
 DEFAULT_DOWNLOAD_DIR = _get_default_download_dir()
 APP_NAME = "Asistente RI Descargas Pro"
-APP_VERSION = "3.3.1"
+APP_VERSION = "3.3.2"
 APP_VERSION_LABEL = f"V{APP_VERSION}"
 DEFAULT_EXE_NAME = "AsistenteRIDescargasPro.exe"
+DEFAULT_INSTALLER_PREFIX = "Instalar_AsistenteRIDescargasPro_v"
 GITHUB_RELEASE_REPOSITORY = "despino-netizen/asistente-ri-descargas-pro"
 GITHUB_RELEASE_ASSET_NAME = DEFAULT_EXE_NAME
 GITHUB_API_VERSION = "2026-03-10"
@@ -94,8 +94,8 @@ class GobiernoPDFDownloader(ctk.CTk):
 
         # --- ConfiguraciÃ³n de la Ventana ---
         self.title(f"{APP_NAME} | {APP_VERSION_LABEL}")
-        self.geometry("1240x840")
-        self.minsize(980, 680)
+        self.geometry("1320x860")
+        self.minsize(1120, 720)
         self.configure(fg_color=APP_BG)
         
         # Variables de control
@@ -913,7 +913,25 @@ class GobiernoPDFDownloader(ctk.CTk):
             return ""
         return os.path.abspath(sys.executable)
 
-    def _expected_update_asset_name(self):
+    def _installed_app_dir(self):
+        local_appdata = os.getenv("LOCALAPPDATA", "").strip()
+        if not local_appdata:
+            return ""
+        return os.path.abspath(os.path.join(local_appdata, "Programs", "AsistenteRIDescargasPro"))
+
+    def _is_running_from_installed_location(self):
+        exe_path = self._current_exe_path()
+        if not exe_path:
+            return False
+
+        current_dir = os.path.abspath(os.path.dirname(exe_path))
+        installed_dir = self._installed_app_dir()
+        if installed_dir and os.path.normcase(current_dir) == os.path.normcase(installed_dir):
+            return True
+
+        return os.path.exists(os.path.join(current_dir, "unins000.exe"))
+
+    def _expected_direct_update_asset_name(self):
         current_name = os.path.basename(self._current_exe_path())
         candidates = [
             current_name,
@@ -927,6 +945,15 @@ class GobiernoPDFDownloader(ctk.CTk):
                 return candidate
         return DEFAULT_EXE_NAME
 
+    def _expected_installer_asset_name(self, version_text=""):
+        normalized = self._normalize_version_tag(version_text or APP_VERSION)
+        return f"{DEFAULT_INSTALLER_PREFIX}{normalized}.exe"
+
+    def _expected_update_asset_name(self, version_text=""):
+        if self._is_running_from_installed_location():
+            return self._expected_installer_asset_name(version_text)
+        return self._expected_direct_update_asset_name()
+
     def _configured_github_repo(self):
         repo = str(self.saved_config.get("github_repo", "") or "").strip().strip("/")
         if repo:
@@ -936,31 +963,73 @@ class GobiernoPDFDownloader(ctk.CTk):
     def _powershell_literal(self, value):
         return "'" + str(value).replace("'", "''") + "'"
 
-    def _choose_release_asset(self, assets):
+    def _is_installer_asset_name(self, asset_name):
+        normalized = str(asset_name or "").strip().lower()
+        return normalized.startswith(DEFAULT_INSTALLER_PREFIX.lower()) and normalized.endswith(".exe")
+
+    def _update_staging_dir(self):
+        staging_dir = os.path.join(APP_DATA_DIR, "updates")
+        os.makedirs(staging_dir, exist_ok=True)
+        return staging_dir
+
+    def _choose_release_asset(self, assets, latest_version=""):
         if not isinstance(assets, list):
             return None
 
-        preferred_names = []
-        for name in [
+        normalized_assets = [asset for asset in assets if isinstance(asset, dict)]
+
+        def find_exact_name_match(preferred_names):
+            for preferred_name in preferred_names:
+                normalized_name = str(preferred_name or "").strip().lower()
+                if not normalized_name:
+                    continue
+                for asset in normalized_assets:
+                    asset_name = str(asset.get("name", "") or "").strip().lower()
+                    if asset_name == normalized_name and asset.get("browser_download_url"):
+                        return asset
+            return None
+
+        direct_preferred_names = [
             os.path.basename(self._current_exe_path()),
             str(self.saved_config.get("github_asset_name", "") or "").strip(),
             GITHUB_RELEASE_ASSET_NAME,
             DEFAULT_EXE_NAME,
-        ]:
-            normalized_name = str(name or "").strip().lower()
-            if normalized_name and normalized_name not in preferred_names:
-                preferred_names.append(normalized_name)
+        ]
+        installer_preferred_names = [
+            self._expected_installer_asset_name(latest_version),
+            str(self.saved_config.get("github_asset_name", "") or "").strip(),
+        ]
 
-        normalized_assets = [asset for asset in assets if isinstance(asset, dict)]
-        for preferred_name in preferred_names:
+        if self._is_running_from_installed_location():
+            installer_asset = find_exact_name_match(installer_preferred_names)
+            if installer_asset:
+                return installer_asset
+
             for asset in normalized_assets:
-                asset_name = str(asset.get("name", "") or "").strip().lower()
-                if asset_name == preferred_name and asset.get("browser_download_url"):
+                asset_name = str(asset.get("name", "") or "").strip()
+                if self._is_installer_asset_name(asset_name) and asset.get("browser_download_url"):
                     return asset
 
+        direct_asset = find_exact_name_match(direct_preferred_names)
+        if direct_asset:
+            return direct_asset
+
         for asset in normalized_assets:
-            asset_name = str(asset.get("name", "") or "").strip().lower()
-            if asset_name.endswith(".exe") and asset.get("browser_download_url"):
+            asset_name = str(asset.get("name", "") or "").strip()
+            if (
+                asset.get("browser_download_url")
+                and asset_name.lower().endswith(".exe")
+                and not self._is_installer_asset_name(asset_name)
+            ):
+                return asset
+
+        installer_asset = find_exact_name_match(installer_preferred_names)
+        if installer_asset:
+            return installer_asset
+
+        for asset in normalized_assets:
+            asset_name = str(asset.get("name", "") or "").strip()
+            if self._is_installer_asset_name(asset_name) and asset.get("browser_download_url"):
                 return asset
 
         return None
@@ -1039,9 +1108,9 @@ class GobiernoPDFDownloader(ctk.CTk):
                     )
                 return
 
-            asset = self._choose_release_asset(release_info.get("assets"))
+            asset = self._choose_release_asset(release_info.get("assets"), latest_version)
             if not asset:
-                expected_name = self._expected_update_asset_name()
+                expected_name = self._expected_update_asset_name(latest_version)
                 message = (
                     "Hay una versión nueva en GitHub, pero no se encontró un archivo "
                     f"compatible para actualizar.\n\nSube a Releases un asset llamado '{expected_name}'."
@@ -1094,15 +1163,17 @@ class GobiernoPDFDownloader(ctk.CTk):
             self.update_check_in_progress = False
             self._set_update_button_state(checking=False)
 
-    def _create_update_script(self, downloaded_exe_path, target_exe_path):
+    def _create_binary_swap_update_script(self, downloaded_exe_path, target_exe_path):
         script_path = os.path.join(
-            tempfile.gettempdir(),
+            self._update_staging_dir(),
             f"ri_auto_update_{uuid.uuid4().hex[:8]}.ps1",
         )
         script_content = f"""$ErrorActionPreference = 'SilentlyContinue'
 $pidToWait = {os.getpid()}
 $sourceExe = {self._powershell_literal(downloaded_exe_path)}
 $targetExe = {self._powershell_literal(target_exe_path)}
+$tempTarget = "$targetExe.new"
+$backupTarget = "$targetExe.bak"
 $deadline = (Get-Date).AddMinutes(5)
 
 while ((Get-Date) -lt $deadline) {{
@@ -1114,21 +1185,103 @@ while ((Get-Date) -lt $deadline) {{
 }}
 
 Start-Sleep -Milliseconds 900
-$updated = $false
-for ($i = 0; $i -lt 10; $i++) {{
+$sourceSize = 0
+if (Test-Path -LiteralPath $sourceExe) {{
     try {{
-        Move-Item -LiteralPath $sourceExe -Destination $targetExe -Force
+        $sourceSize = (Get-Item -LiteralPath $sourceExe).Length
+    }} catch {{
+        $sourceSize = 0
+    }}
+}}
+$updated = $false
+for ($i = 0; $i -lt 12; $i++) {{
+    try {{
+        if (Test-Path -LiteralPath $tempTarget) {{
+            Remove-Item -LiteralPath $tempTarget -Force
+        }}
+        Copy-Item -LiteralPath $sourceExe -Destination $tempTarget -Force
+        $copiedSize = (Get-Item -LiteralPath $tempTarget).Length
+        if ($sourceSize -le 0 -or $copiedSize -lt $sourceSize) {{
+            throw "La copia temporal no quedó completa."
+        }}
+        if (Test-Path -LiteralPath $backupTarget) {{
+            Remove-Item -LiteralPath $backupTarget -Force
+        }}
+        if (Test-Path -LiteralPath $targetExe) {{
+            Move-Item -LiteralPath $targetExe -Destination $backupTarget -Force
+        }}
+        Move-Item -LiteralPath $tempTarget -Destination $targetExe -Force
         $updated = $true
         break
     }} catch {{
+        if (Test-Path -LiteralPath $tempTarget) {{
+            Remove-Item -LiteralPath $tempTarget -Force
+        }}
         Start-Sleep -Seconds 1
     }}
 }}
 
 if ($updated) {{
+    Start-Sleep -Seconds 2
+    Start-Process -FilePath $targetExe
+    Start-Sleep -Seconds 2
+    if (Test-Path -LiteralPath $backupTarget) {{
+        Remove-Item -LiteralPath $backupTarget -Force
+    }}
+}}
+
+if (Test-Path -LiteralPath $sourceExe) {{
+    Remove-Item -LiteralPath $sourceExe -Force
+}}
+Remove-Item -LiteralPath $PSCommandPath -Force
+"""
+        with open(script_path, "w", encoding="utf-8") as script_file:
+            script_file.write(script_content)
+        return script_path
+
+    def _create_installer_update_script(self, installer_path, target_exe_path):
+        script_path = os.path.join(
+            self._update_staging_dir(),
+            f"ri_installer_update_{uuid.uuid4().hex[:8]}.ps1",
+        )
+        script_content = f"""$ErrorActionPreference = 'SilentlyContinue'
+$pidToWait = {os.getpid()}
+$installerPath = {self._powershell_literal(installer_path)}
+$targetExe = {self._powershell_literal(target_exe_path)}
+$deadline = (Get-Date).AddMinutes(5)
+$installArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NOCANCEL', '/SP-')
+
+while ((Get-Date) -lt $deadline) {{
+    $proc = Get-Process -Id $pidToWait -ErrorAction SilentlyContinue
+    if (-not $proc) {{
+        break
+    }}
+    Start-Sleep -Seconds 1
+}}
+
+Start-Sleep -Milliseconds 900
+$installed = $false
+for ($i = 0; $i -lt 6; $i++) {{
+    try {{
+        $installerProc = Start-Process -FilePath $installerPath -ArgumentList $installArgs -PassThru -WindowStyle Hidden
+        $installerProc.WaitForExit()
+        if ($installerProc.ExitCode -eq 0 -or $installerProc.ExitCode -eq 3010) {{
+            $installed = $true
+            break
+        }}
+    }} catch {{
+        Start-Sleep -Seconds 2
+    }}
+}}
+
+if ($installed -and (Test-Path -LiteralPath $targetExe)) {{
+    Start-Sleep -Seconds 2
     Start-Process -FilePath $targetExe
 }}
 
+if (Test-Path -LiteralPath $installerPath) {{
+    Remove-Item -LiteralPath $installerPath -Force
+}}
 Remove-Item -LiteralPath $PSCommandPath -Force
 """
         with open(script_path, "w", encoding="utf-8") as script_file:
@@ -1185,8 +1338,11 @@ Remove-Item -LiteralPath $PSCommandPath -Force
         if not asset_url:
             raise RuntimeError("El release no incluye una URL de descarga válida.")
 
-        temp_dir = tempfile.mkdtemp(prefix="RIUpdater_")
-        temp_exe_path = os.path.join(temp_dir, re.sub(r"[^A-Za-z0-9._-]", "_", asset_name))
+        staging_dir = self._update_staging_dir()
+        temp_exe_path = os.path.join(
+            staging_dir,
+            f"{uuid.uuid4().hex[:8]}_{re.sub(r'[^A-Za-z0-9._-]', '_', asset_name)}",
+        )
 
         self.log(f"Descargando actualización {asset_name}...", "INFO")
         request = urllib.request.Request(
@@ -1211,7 +1367,18 @@ Remove-Item -LiteralPath $PSCommandPath -Force
             release_info.get("tag_name") or release_info.get("name") or ""
         )
         self.log(f"Actualización V{latest_version} descargada. Cerrando para instalar...", "WARN")
-        update_script_path = self._create_update_script(temp_exe_path, exe_path)
+        self.log(
+            "Se aplicará la actualización con instalador." if self._is_installer_asset_name(asset_name)
+            else "Se aplicará la actualización reemplazando el ejecutable.",
+            "INFO",
+        )
+
+        if self._is_installer_asset_name(asset_name):
+            installed_dir = self._installed_app_dir()
+            target_exe_path = os.path.join(installed_dir, DEFAULT_EXE_NAME) if installed_dir else exe_path
+            update_script_path = self._create_installer_update_script(temp_exe_path, target_exe_path)
+        else:
+            update_script_path = self._create_binary_swap_update_script(temp_exe_path, exe_path)
         self.after(0, lambda p=update_script_path: self._shutdown_for_update(p))
 
     def _confirm_logout_before_app_close(self):
@@ -3440,10 +3607,12 @@ Remove-Item -LiteralPath $PSCommandPath -Force
         self._resize_after_id = None
         try:
             main_width = max(self.main_frame.winfo_width(), self.winfo_width() - self.sidebar_frame.winfo_width())
+            window_height = self.winfo_height()
         except Exception:
             return
 
-        compact = main_width < 1080
+        compact = main_width < 930
+        compressed_height = window_height < 790
         if self._compact_layout != compact:
             if compact:
                 self.status_panel.grid_configure(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
@@ -3461,15 +3630,35 @@ Remove-Item -LiteralPath $PSCommandPath -Force
             self._compact_layout = compact
 
         try:
-            self.sidebar_description.configure(wraplength=194)
-            self.sidebar_support_text.configure(wraplength=194)
-            self.header_description.configure(wraplength=420 if compact else 460)
-            self.controls_description.configure(wraplength=540 if compact else 620)
-            self.action_description.configure(wraplength=460 if compact else 300)
-            self.status_description.configure(wraplength=540 if compact else 270)
-            self.lbl_status.configure(wraplength=520 if compact else 260)
-            self.lbl_warning.configure(wraplength=540 if compact else 286)
-            self.lbl_subtitle.configure(wraplength=480 if compact else 540)
+            def wrap_for(widget, padding, minimum, fallback, maximum=None):
+                width = widget.winfo_width()
+                if width <= 1:
+                    width = fallback
+                wraplength = max(minimum, int(width - padding))
+                if maximum is not None:
+                    wraplength = min(maximum, wraplength)
+                return wraplength
+
+            sidebar_wrap = wrap_for(self.sidebar_frame, 54, 170, 194, 220)
+            hero_wrap = wrap_for(self.hero_frame, 360 if not compact else 110, 340, 520, 660)
+            header_wrap = wrap_for(self.header_frame, 60, 280, 420, 680)
+            controls_wrap = wrap_for(self.controls_frame, 60, 340, 560, 760)
+            action_wrap = wrap_for(self.action_subframe, 18, 240, 320, 520)
+            status_wrap = wrap_for(self.status_panel, 42, 220, 280, 560)
+            status_value_wrap = wrap_for(self.status_card, 36, 220, 250, 520)
+            warning_wrap = wrap_for(self.warning_frame, 36, 220, 286, 560)
+
+            self.sidebar_description.configure(wraplength=sidebar_wrap)
+            self.sidebar_support_text.configure(wraplength=sidebar_wrap)
+            self.sidebar_hint.configure(wraplength=sidebar_wrap)
+            self.header_description.configure(wraplength=header_wrap)
+            self.controls_description.configure(wraplength=controls_wrap)
+            self.action_description.configure(wraplength=action_wrap)
+            self.status_description.configure(wraplength=status_wrap)
+            self.lbl_status.configure(wraplength=status_value_wrap)
+            self.lbl_warning.configure(wraplength=warning_wrap)
+            self.lbl_subtitle.configure(wraplength=hero_wrap)
+            self.footer_note.configure(wraplength=340 if compressed_height else 420, justify="right")
         except Exception:
             pass
 
