@@ -39,11 +39,28 @@ def _get_app_base_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _get_app_data_dir():
+    local_appdata = os.getenv("LOCALAPPDATA", "").strip()
+    if local_appdata:
+        return os.path.join(local_appdata, "AsistenteRIDescargasPro")
+    return os.path.join(_get_app_base_dir(), "_user_data")
+
+
+def _get_default_download_dir():
+    profile_dir = os.path.expanduser("~")
+    downloads_dir = os.path.join(profile_dir, "Downloads")
+    if not os.path.isdir(downloads_dir):
+        downloads_dir = os.path.join(profile_dir, "Documents")
+    return os.path.join(downloads_dir, "Descargas_PDF_RI")
+
+
 APP_BASE_DIR = _get_app_base_dir()
-CONFIG_FILE = os.path.join(APP_BASE_DIR, "config_descargas.json")
-DEFAULT_DOWNLOAD_DIR = os.path.join(APP_BASE_DIR, "Descargas_PDF")
+APP_DATA_DIR = _get_app_data_dir()
+CONFIG_FILE = os.path.join(APP_DATA_DIR, "config_descargas.json")
+LOG_FILE = os.path.join(APP_DATA_DIR, "historial_actividad.txt")
+DEFAULT_DOWNLOAD_DIR = _get_default_download_dir()
 APP_NAME = "Asistente RI Descargas Pro"
-APP_VERSION = "3.2.0"
+APP_VERSION = "3.2.1"
 APP_VERSION_LABEL = f"V{APP_VERSION}"
 DEFAULT_EXE_NAME = "AsistenteRIDescargasPro.exe"
 GITHUB_RELEASE_REPOSITORY = "despino-netizen/asistente-ri-descargas-pro"
@@ -124,6 +141,10 @@ class GobiernoPDFDownloader(ctk.CTk):
 
     def load_config(self):
         """Carga la configuraciÃ³n desde un archivo JSON local."""
+        try:
+            os.makedirs(APP_DATA_DIR, exist_ok=True)
+        except Exception:
+            pass
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -150,6 +171,7 @@ class GobiernoPDFDownloader(ctk.CTk):
         config = dict(self.saved_config) if isinstance(self.saved_config, dict) else {}
         config["last_folder"] = current_folder
         try:
+            os.makedirs(APP_DATA_DIR, exist_ok=True)
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(config, f, ensure_ascii=False, indent=2)
             self.saved_config = dict(config)
@@ -1551,7 +1573,8 @@ Remove-Item -LiteralPath $PSCommandPath -Force
         if not persist:
             return
         try:
-            with open("historial_actividad.txt", "a", encoding="utf-8") as f:
+            os.makedirs(APP_DATA_DIR, exist_ok=True)
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
                 timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 f.write(f"[{timestamp}] [{level}] {message}\n")
         except: pass
