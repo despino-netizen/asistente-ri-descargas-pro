@@ -1,5 +1,5 @@
 #define MyAppName "Asistente RI Descargas Pro"
-#define MyAppVersion "3.3.2"
+#define MyAppVersion "3.3.3"
 #define MyAppPublisher "Dariel Espino"
 #define MyAppExeName "AsistenteRIDescargasPro.exe"
 #define MyAppFolder "AsistenteRIDescargasPro"
@@ -30,7 +30,7 @@ Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 Name: "desktopicon"; Description: "Crear acceso directo en el escritorio"; Flags: unchecked
 
 [Files]
-Source: "..\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\AsistenteRIDescargasPro\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
