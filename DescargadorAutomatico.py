@@ -59,7 +59,7 @@ CONFIG_FILE = os.path.join(APP_DATA_DIR, "config_descargas.json")
 LOG_FILE = os.path.join(APP_DATA_DIR, "historial_actividad.txt")
 DEFAULT_DOWNLOAD_DIR = _get_default_download_dir()
 APP_NAME = "Asistente RI Descargas Pro"
-APP_VERSION = "3.3.3"
+APP_VERSION = "3.3.4"
 APP_VERSION_LABEL = f"V{APP_VERSION}"
 DEFAULT_EXE_NAME = "AsistenteRIDescargasPro.exe"
 DEFAULT_INSTALLER_PREFIX = "Instalar_AsistenteRIDescargasPro_v"
@@ -110,6 +110,13 @@ class GobiernoPDFDownloader(ctk.CTk):
         self.browser_download_dir = None
         self.update_check_in_progress = False
         self.update_prompted_version = ""
+        self.update_install_pending = False
+        self.update_feedback_window = None
+        self.update_feedback_title = None
+        self.update_feedback_message = None
+        self.update_feedback_detail = None
+        self.update_feedback_progress = None
+        self.update_feedback_percent = None
         
         # Cargar configuraciÃ³n guardada (Memoria)
         self.saved_config = self.load_config()
@@ -899,6 +906,193 @@ class GobiernoPDFDownloader(ctk.CTk):
         except Exception:
             pass
 
+    def _format_progress_bytes(self, total_bytes):
+        try:
+            total = float(total_bytes)
+        except Exception:
+            total = 0.0
+
+        units = ["B", "KB", "MB", "GB"]
+        unit_index = 0
+        while total >= 1024 and unit_index < len(units) - 1:
+            total /= 1024.0
+            unit_index += 1
+
+        decimals = 0 if unit_index == 0 else 1
+        return f"{total:.{decimals}f} {units[unit_index]}"
+
+    def _ensure_update_feedback_window(self):
+        if self.update_feedback_window and self.update_feedback_window.winfo_exists():
+            return self.update_feedback_window
+
+        update_window = ctk.CTkToplevel(self)
+        update_window.title("Actualización en curso")
+        update_window.geometry("430x220")
+        update_window.resizable(False, False)
+        update_window.transient(self)
+        update_window.attributes("-topmost", True)
+        update_window.protocol("WM_DELETE_WINDOW", lambda: None)
+        update_window.configure(fg_color=APP_BG)
+        update_window.grid_columnconfigure(0, weight=1)
+        update_window.grid_rowconfigure(0, weight=1)
+
+        self.update_idletasks()
+        try:
+            pos_x = self.winfo_x() + max(40, int((self.winfo_width() - 430) / 2))
+            pos_y = self.winfo_y() + max(40, int((self.winfo_height() - 220) / 2))
+            update_window.geometry(f"430x220+{pos_x}+{pos_y}")
+        except Exception:
+            pass
+
+        shell = ctk.CTkFrame(
+            update_window,
+            corner_radius=22,
+            fg_color=CARD_BG,
+            border_color=CARD_BORDER,
+            border_width=1,
+        )
+        shell.grid(row=0, column=0, sticky="nsew", padx=14, pady=14)
+        shell.grid_columnconfigure(0, weight=1)
+
+        self.update_feedback_title = ctk.CTkLabel(
+            shell,
+            text="Actualización en curso",
+            font=("Segoe UI", 20, "bold"),
+            text_color=TEXT_MAIN,
+        )
+        self.update_feedback_title.grid(row=0, column=0, padx=18, pady=(18, 6), sticky="w")
+
+        self.update_feedback_message = ctk.CTkLabel(
+            shell,
+            text="Preparando descarga...",
+            font=("Segoe UI", 12),
+            text_color=TEXT_MUTED,
+            justify="left",
+            wraplength=360,
+        )
+        self.update_feedback_message.grid(row=1, column=0, padx=18, sticky="w")
+
+        self.update_feedback_detail = ctk.CTkLabel(
+            shell,
+            text="No cierres la aplicación mientras se actualiza.",
+            font=("Segoe UI", 11, "bold"),
+            text_color="#6C6A65",
+            justify="left",
+            wraplength=360,
+        )
+        self.update_feedback_detail.grid(row=2, column=0, padx=18, pady=(10, 10), sticky="w")
+
+        self.update_feedback_progress = ctk.CTkProgressBar(
+            shell,
+            height=12,
+            corner_radius=999,
+            progress_color=PRIMARY,
+            fg_color="#E4D8CA",
+        )
+        self.update_feedback_progress.grid(row=3, column=0, padx=18, pady=(0, 8), sticky="ew")
+        self.update_feedback_progress.configure(mode="indeterminate")
+        self.update_feedback_progress.start()
+
+        self.update_feedback_percent = ctk.CTkLabel(
+            shell,
+            text="Procesando...",
+            font=("Segoe UI", 11, "bold"),
+            text_color=PRIMARY,
+        )
+        self.update_feedback_percent.grid(row=4, column=0, padx=18, pady=(0, 16), sticky="e")
+
+        self.update_feedback_window = update_window
+        return update_window
+
+    def _set_update_feedback(
+        self,
+        title=None,
+        message=None,
+        detail=None,
+        progress=None,
+        indeterminate=None,
+    ):
+        def _apply():
+            if not self.winfo_exists():
+                return
+
+            window = self._ensure_update_feedback_window()
+            if not window or not window.winfo_exists():
+                return
+
+            if title is not None and self.update_feedback_title:
+                self.update_feedback_title.configure(text=title)
+                try:
+                    window.title(title)
+                except Exception:
+                    pass
+
+            if message is not None and self.update_feedback_message:
+                self.update_feedback_message.configure(text=message)
+
+            if detail is not None and self.update_feedback_detail:
+                self.update_feedback_detail.configure(text=detail)
+
+            if self.update_feedback_progress:
+                use_indeterminate = bool(indeterminate) if indeterminate is not None else progress is None
+                if use_indeterminate:
+                    self.update_feedback_progress.stop()
+                    self.update_feedback_progress.configure(mode="indeterminate")
+                    self.update_feedback_progress.start()
+                    if self.update_feedback_percent:
+                        self.update_feedback_percent.configure(text="Procesando...")
+                else:
+                    normalized = max(0.0, min(1.0, float(progress or 0.0)))
+                    self.update_feedback_progress.stop()
+                    self.update_feedback_progress.configure(mode="determinate")
+                    self.update_feedback_progress.set(normalized)
+                    if self.update_feedback_percent:
+                        self.update_feedback_percent.configure(text=f"{int(normalized * 100)}%")
+
+            try:
+                window.deiconify()
+                window.lift()
+                window.focus_force()
+            except Exception:
+                pass
+
+            try:
+                self.header_activity.start()
+            except Exception:
+                pass
+
+        try:
+            self.after(0, _apply)
+        except Exception:
+            pass
+
+    def _close_update_feedback(self):
+        def _apply():
+            window = self.update_feedback_window
+            if window and window.winfo_exists():
+                try:
+                    window.destroy()
+                except Exception:
+                    pass
+
+            self.update_feedback_window = None
+            self.update_feedback_title = None
+            self.update_feedback_message = None
+            self.update_feedback_detail = None
+            self.update_feedback_progress = None
+            self.update_feedback_percent = None
+
+            if not self.is_running:
+                try:
+                    self.header_activity.stop()
+                except Exception:
+                    pass
+
+        try:
+            self.after(0, _apply)
+        except Exception:
+            pass
+
     def _normalize_version_tag(self, version_text):
         version = str(version_text or "").strip()
         return re.sub(r"^[Vv]\s*", "", version)
@@ -1069,6 +1263,7 @@ class GobiernoPDFDownloader(ctk.CTk):
             return
 
         self.update_check_in_progress = True
+        self.update_install_pending = False
         self._set_update_button_state(checking=True)
         threading.Thread(
             target=self._check_for_updates,
@@ -1078,6 +1273,15 @@ class GobiernoPDFDownloader(ctk.CTk):
 
     def _check_for_updates(self, manual=False):
         try:
+            if manual:
+                self._set_update_feedback(
+                    title="Buscando actualización",
+                    message="Consultando la versión más reciente en GitHub.",
+                    detail="Esto suele tardar solo unos segundos.",
+                    progress=None,
+                    indeterminate=True,
+                )
+
             repo = self._configured_github_repo()
             current_version = self._normalize_version_tag(APP_VERSION)
 
@@ -1101,6 +1305,7 @@ class GobiernoPDFDownloader(ctk.CTk):
                 raise RuntimeError("GitHub no devolvió una versión válida.")
 
             if self._version_key(latest_version) <= self._version_key(current_version):
+                self._close_update_feedback()
                 if manual:
                     self._show_info_threadsafe(
                         "Actualización",
@@ -1110,6 +1315,7 @@ class GobiernoPDFDownloader(ctk.CTk):
 
             asset = self._choose_release_asset(release_info.get("assets"), latest_version)
             if not asset:
+                self._close_update_feedback()
                 expected_name = self._expected_update_asset_name(latest_version)
                 message = (
                     "Hay una versión nueva en GitHub, pero no se encontró un archivo "
@@ -1126,6 +1332,7 @@ class GobiernoPDFDownloader(ctk.CTk):
 
             self.update_prompted_version = latest_version
             asset_name = str(asset.get("name") or self._expected_update_asset_name()).strip()
+            self._close_update_feedback()
             should_update = self._ask_yes_no_threadsafe(
                 "Actualización disponible",
                 "Hay una nueva versión disponible.\n\n"
@@ -1136,24 +1343,31 @@ class GobiernoPDFDownloader(ctk.CTk):
                 "¿Desea actualizar ahora?",
             )
             if not should_update:
+                self._close_update_feedback()
                 self.log(f"Actualización pospuesta por el usuario: V{latest_version}", "INFO")
                 return
 
             self._download_and_apply_update(release_info, asset)
 
         except urllib.error.HTTPError as exc:
+            self.update_install_pending = False
+            self._close_update_feedback()
             message = f"No se pudo consultar GitHub Releases (HTTP {exc.code})."
             if manual:
                 self._show_error_threadsafe("Actualización", message)
             else:
                 self.log(message, "WARN")
         except urllib.error.URLError as exc:
+            self.update_install_pending = False
+            self._close_update_feedback()
             message = f"No se pudo conectar con GitHub: {exc.reason}"
             if manual:
                 self._show_error_threadsafe("Actualización", message)
             else:
                 self.log(message, "WARN")
         except Exception as exc:
+            self.update_install_pending = False
+            self._close_update_feedback()
             message = f"Error buscando actualización: {exc}"
             if manual:
                 self._show_error_threadsafe("Actualización", message)
@@ -1162,6 +1376,8 @@ class GobiernoPDFDownloader(ctk.CTk):
         finally:
             self.update_check_in_progress = False
             self._set_update_button_state(checking=False)
+            if not self.update_install_pending:
+                self._close_update_feedback()
 
     def _create_binary_swap_update_script(self, downloaded_exe_path, target_exe_path):
         script_path = os.path.join(
@@ -1249,7 +1465,7 @@ $pidToWait = {os.getpid()}
 $installerPath = {self._powershell_literal(installer_path)}
 $targetExe = {self._powershell_literal(target_exe_path)}
 $deadline = (Get-Date).AddMinutes(5)
-$installArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NOCANCEL', '/SP-')
+$installArgs = @('/SILENT', '/SUPPRESSMSGBOXES', '/NOCANCEL', '/SP-')
 
 while ((Get-Date) -lt $deadline) {{
     $proc = Get-Process -Id $pidToWait -ErrorAction SilentlyContinue
@@ -1263,7 +1479,7 @@ Start-Sleep -Milliseconds 900
 $installed = $false
 for ($i = 0; $i -lt 6; $i++) {{
     try {{
-        $installerProc = Start-Process -FilePath $installerPath -ArgumentList $installArgs -PassThru -WindowStyle Hidden
+        $installerProc = Start-Process -FilePath $installerPath -ArgumentList $installArgs -PassThru
         $installerProc.WaitForExit()
         if ($installerProc.ExitCode -eq 0 -or $installerProc.ExitCode -eq 3010) {{
             $installed = $true
@@ -1289,6 +1505,18 @@ Remove-Item -LiteralPath $PSCommandPath -Force
         return script_path
 
     def _shutdown_for_update(self, update_script_path):
+        self._set_update_feedback(
+            title="Iniciando actualización",
+            message="Cerrando la aplicación para continuar la instalación.",
+            detail="En unos segundos verás el instalador con su progreso.",
+            progress=None,
+            indeterminate=True,
+        )
+        try:
+            self.update_idletasks()
+            self.update()
+        except Exception:
+            pass
         try:
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             subprocess.Popen(
@@ -1345,6 +1573,13 @@ Remove-Item -LiteralPath $PSCommandPath -Force
         )
 
         self.log(f"Descargando actualización {asset_name}...", "INFO")
+        self._set_update_feedback(
+            title="Descargando actualización",
+            message=f"Descargando {asset_name}",
+            detail="No cierres la aplicación mientras se completa la descarga.",
+            progress=0,
+            indeterminate=False,
+        )
         request = urllib.request.Request(
             asset_url,
             headers={
@@ -1354,11 +1589,40 @@ Remove-Item -LiteralPath $PSCommandPath -Force
         )
 
         with urllib.request.urlopen(request, timeout=120) as response, open(temp_exe_path, "wb") as output_file:
+            total_size = int(response.headers.get("Content-Length", "0") or "0")
+            downloaded_size = 0
+            last_feedback_at = 0.0
             while True:
                 chunk = response.read(1024 * 1024)
                 if not chunk:
                     break
                 output_file.write(chunk)
+                downloaded_size += len(chunk)
+
+                now = time.time()
+                if total_size > 0:
+                    progress_ratio = downloaded_size / float(total_size)
+                    if now - last_feedback_at >= 0.10 or downloaded_size >= total_size:
+                        self._set_update_feedback(
+                            title="Descargando actualización",
+                            message=f"Descargando {asset_name}",
+                            detail=(
+                                f"{self._format_progress_bytes(downloaded_size)} de "
+                                f"{self._format_progress_bytes(total_size)}"
+                            ),
+                            progress=progress_ratio,
+                            indeterminate=False,
+                        )
+                        last_feedback_at = now
+                elif now - last_feedback_at >= 0.20:
+                    self._set_update_feedback(
+                        title="Descargando actualización",
+                        message=f"Descargando {asset_name}",
+                        detail=f"{self._format_progress_bytes(downloaded_size)} descargados",
+                        progress=None,
+                        indeterminate=True,
+                    )
+                    last_feedback_at = now
 
         if not os.path.exists(temp_exe_path) or os.path.getsize(temp_exe_path) <= 0:
             raise RuntimeError("La descarga de la actualización llegó vacía o incompleta.")
@@ -1366,12 +1630,20 @@ Remove-Item -LiteralPath $PSCommandPath -Force
         latest_version = self._normalize_version_tag(
             release_info.get("tag_name") or release_info.get("name") or ""
         )
+        self._set_update_feedback(
+            title="Preparando instalación",
+            message=f"La versión V{latest_version} ya se descargó correctamente.",
+            detail="La aplicación se cerrará y se abrirá el instalador con progreso visible.",
+            progress=None,
+            indeterminate=True,
+        )
         self.log(f"Actualización V{latest_version} descargada. Cerrando para instalar...", "WARN")
         self.log(
             "Se aplicará la actualización con instalador." if self._is_installer_asset_name(asset_name)
             else "Se aplicará la actualización reemplazando el ejecutable.",
             "INFO",
         )
+        self.update_install_pending = True
 
         if self._is_installer_asset_name(asset_name):
             installed_dir = self._installed_app_dir()
