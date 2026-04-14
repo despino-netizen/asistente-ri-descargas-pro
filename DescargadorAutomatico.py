@@ -59,7 +59,7 @@ CONFIG_FILE = os.path.join(APP_DATA_DIR, "config_descargas.json")
 LOG_FILE = os.path.join(APP_DATA_DIR, "historial_actividad.txt")
 DEFAULT_DOWNLOAD_DIR = _get_default_download_dir()
 APP_NAME = "Asistente RI Descargas Pro"
-APP_VERSION = "3.4.5"
+APP_VERSION = "3.4.6"
 APP_VERSION_LABEL = f"V{APP_VERSION}"
 DEFAULT_EXE_NAME = "AsistenteRIDescargasPro.exe"
 DEFAULT_PORTABLE_DIR_NAME = "AsistenteRIDescargasPro"
@@ -2574,7 +2574,7 @@ try {{
                             stable_counts.pop(file_name, None)
             except:
                 pass
-            can_continue, paused_elapsed = self._sleep_with_pause_and_elapsed(0.5)
+            can_continue, paused_elapsed = self._sleep_with_pause_and_elapsed(0.25)
             end_time += paused_elapsed
             if not can_continue:
                 return None
@@ -2720,7 +2720,7 @@ try {{
             except:
                 pass
 
-            can_continue, paused_elapsed = self._sleep_with_pause_and_elapsed(1)
+            can_continue, paused_elapsed = self._sleep_with_pause_and_elapsed(0.3)
             end_time += paused_elapsed
             if not can_continue:
                 return None
@@ -3053,7 +3053,7 @@ try {{
                         modal_signature_before = self._get_modal_detail_signature()
 
                         self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn_ver_1)
-                        if not self._sleep_with_pause(0.5):
+                        if not self._sleep_with_pause(0.2):
                             break
                         try:
                             btn_ver_1.click()
@@ -3114,7 +3114,7 @@ try {{
 
                                 modal_signature_before = self._get_modal_detail_signature()
                                 self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn_ver_1)
-                                if not self._sleep_with_pause(0.5):
+                                if not self._sleep_with_pause(0.2):
                                     break
                                 try:
                                     btn_ver_1.click()
@@ -3278,7 +3278,7 @@ try {{
                                     self.driver.get(url_before_open_pdf)
                                     WebDriverWait(self.driver, 20).until(lambda d: len(self._get_table_rows()) > 0)
                             self._close_extra_windows(main_window)
-                            if not self._sleep_with_pause(0.8):
+                            if not self._sleep_with_pause(0.35):
                                 break
 
                             if filename:
@@ -3349,7 +3349,7 @@ try {{
                                         WebDriverWait(self.driver, 20).until(lambda d: len(self._get_table_rows()) > 0)
                                     except Exception:
                                         pass
-                        if not self._sleep_with_pause(1.5):
+                        if not self._sleep_with_pause(0.8):
                             break
 
                 if not success:
