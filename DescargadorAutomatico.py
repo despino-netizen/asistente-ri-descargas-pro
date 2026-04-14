@@ -59,7 +59,7 @@ CONFIG_FILE = os.path.join(APP_DATA_DIR, "config_descargas.json")
 LOG_FILE = os.path.join(APP_DATA_DIR, "historial_actividad.txt")
 DEFAULT_DOWNLOAD_DIR = _get_default_download_dir()
 APP_NAME = "Asistente RI Descargas Pro"
-APP_VERSION = "3.4.0"
+APP_VERSION = "3.4.1"
 APP_VERSION_LABEL = f"V{APP_VERSION}"
 DEFAULT_EXE_NAME = "AsistenteRIDescargasPro.exe"
 DEFAULT_PORTABLE_DIR_NAME = "AsistenteRIDescargasPro"
@@ -1576,7 +1576,8 @@ while ((Get-Date) -lt $deadline) {{
     Start-Sleep -Seconds 1
 }}
 
-Start-Sleep -Milliseconds 900
+# Esperar a que Windows libere los archivos del proceso cerrado
+Start-Sleep -Seconds 3
 
 try {{
     Write-UpdateLog "Extrayendo paquete: $zipPath"
@@ -1591,25 +1592,15 @@ try {{
     }}
     Write-UpdateLog "Contenido extraído en: $expandedDir"
 
-    if (Test-Path -LiteralPath $backupDir) {{
-        Remove-Item -LiteralPath $backupDir -Recurse -Force
+    # Usar robocopy para copiar archivos nuevos encima (no requiere mover carpeta)
+    Write-UpdateLog "Copiando archivos nuevos a: $targetDir"
+    $roboArgs = @($expandedDir, $targetDir, '/E', '/IS', '/IT', '/NFL', '/NDL', '/NJH', '/NJS', '/R:5', '/W:2')
+    $roboResult = Start-Process -FilePath 'robocopy' -ArgumentList $roboArgs -NoNewWindow -Wait -PassThru
+    # robocopy exit codes 0-7 are success
+    if ($roboResult.ExitCode -gt 7) {{
+        throw "robocopy falló con código $($roboResult.ExitCode)"
     }}
-
-    if (Test-Path -LiteralPath $targetDir) {{
-        Write-UpdateLog "Moviendo instalación actual a respaldo: $backupDir"
-        Move-Item -LiteralPath $targetDir -Destination $backupDir -Force
-    }}
-
-    Write-UpdateLog "Moviendo nueva versión a: $targetDir"
-    Move-Item -LiteralPath $expandedDir -Destination $targetDir -Force
-
-    foreach ($name in @('unins000.exe', 'unins000.dat', 'unins000.msg')) {{
-        $sourceFile = Join-Path $backupDir $name
-        $targetFile = Join-Path $targetDir $name
-        if ((Test-Path -LiteralPath $sourceFile) -and -not (Test-Path -LiteralPath $targetFile)) {{
-            Copy-Item -LiteralPath $sourceFile -Destination $targetFile -Force
-        }}
-    }}
+    Write-UpdateLog "Archivos copiados correctamente (robocopy code: $($roboResult.ExitCode))."
 
     if (Test-Path -LiteralPath $appExe) {{
         Write-UpdateLog "Lanzando nueva aplicación: $appExe"
@@ -1619,27 +1610,20 @@ try {{
     }}
 }} catch {{
     Write-UpdateLog ("Error: " + ($_ | Out-String))
-    if (Test-Path -LiteralPath $backupDir -and -not (Test-Path -LiteralPath $targetDir)) {{
-        Write-UpdateLog "Restaurando respaldo anterior."
-        Move-Item -LiteralPath $backupDir -Destination $targetDir -Force
-    }}
     if (Test-Path -LiteralPath $appExe) {{
         Write-UpdateLog "Reabriendo la versión anterior tras el fallo."
         Start-Process -FilePath $appExe
     }}
 }} finally {{
     if (Test-Path -LiteralPath $extractRoot) {{
-        Remove-Item -LiteralPath $extractRoot -Recurse -Force
+        Remove-Item -LiteralPath $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
     }}
     if ($updateSucceeded) {{
         Write-UpdateLog "Actualización completada correctamente."
-        if (Test-Path -LiteralPath $backupDir) {{
-            Remove-Item -LiteralPath $backupDir -Recurse -Force
-        }}
         if (Test-Path -LiteralPath $zipPath) {{
-            Remove-Item -LiteralPath $zipPath -Force
+            Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
         }}
-        Remove-Item -LiteralPath $PSCommandPath -Force
+        Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
     }} else {{
         Write-UpdateLog "La actualización no terminó. Se conservaron archivos para diagnóstico."
     }}
