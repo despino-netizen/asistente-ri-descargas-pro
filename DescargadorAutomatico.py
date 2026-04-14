@@ -59,7 +59,7 @@ CONFIG_FILE = os.path.join(APP_DATA_DIR, "config_descargas.json")
 LOG_FILE = os.path.join(APP_DATA_DIR, "historial_actividad.txt")
 DEFAULT_DOWNLOAD_DIR = _get_default_download_dir()
 APP_NAME = "Asistente RI Descargas Pro"
-APP_VERSION = "3.4.4"
+APP_VERSION = "3.4.5"
 APP_VERSION_LABEL = f"V{APP_VERSION}"
 DEFAULT_EXE_NAME = "AsistenteRIDescargasPro.exe"
 DEFAULT_PORTABLE_DIR_NAME = "AsistenteRIDescargasPro"
@@ -2322,6 +2322,7 @@ try {{
 
     def toggle_ui_state(self, working):
         if working:
+            self._stop_start_btn_pulse()
             self._set_browser_close_warning_enabled(False)
             self.entry_dir.configure(state="disabled")
             self.btn_folder.configure(state="disabled")
@@ -2349,8 +2350,55 @@ try {{
             self._update_retry_button_state()
             self._set_browser_close_warning_enabled(True)
 
+    def _start_btn_pulse(self):
+        """Subtle pulse on btn_start to hint the user about next step."""
+        self._btn_start_pulse_on = getattr(self, "_btn_start_pulse_on", False)
+        if not hasattr(self, "_btn_start_pulse_active") or not self._btn_start_pulse_active:
+            return
+        try:
+            if not self.btn_start.winfo_exists():
+                return
+            if str(self.btn_start.cget("state")) != "normal":
+                self._btn_start_pulse_active = False
+                self.btn_start.configure(fg_color=PRIMARY)
+                return
+            self._btn_start_pulse_on = not self._btn_start_pulse_on
+            color = "#267A73" if self._btn_start_pulse_on else PRIMARY
+            self.btn_start.configure(fg_color=color)
+            self.after(700, self._start_btn_pulse)
+        except Exception:
+            pass
+
+    def _enable_start_btn_with_hint(self):
+        self.btn_start.configure(state="normal", fg_color=PRIMARY)
+        self._btn_start_pulse_active = True
+        self._btn_start_pulse_on = False
+        self.after(700, self._start_btn_pulse)
+
+    def _stop_start_btn_pulse(self):
+        self._btn_start_pulse_active = False
+        try:
+            self.btn_start.configure(fg_color=PRIMARY)
+        except Exception:
+            pass
+
     def launch_browser(self):
         try:
+            # If browser is already running, just bring it to focus
+            if self.driver:
+                try:
+                    self.driver.switch_to.window(self.driver.current_window_handle)
+                    self.driver.execute_script("window.focus();")
+                    self.log("Navegador ya abierto — enfocando ventana.", "INFO")
+                    return
+                except Exception:
+                    # Driver is stale/crashed, close and reopen
+                    try:
+                        self.driver.quit()
+                    except Exception:
+                        pass
+                    self.driver = None
+
             self.log("Abriendo navegador...", "INFO")
             selected_dir, _ = self._set_download_base_dir(
                 self.download_dir.get(),
@@ -2359,13 +2407,6 @@ try {{
             )
             if not os.path.exists(selected_dir):
                 os.makedirs(selected_dir)
-
-            if self.driver:
-                try:
-                    self.driver.quit()
-                except Exception:
-                    pass
-                self.driver = None
 
             options = Options()
             prefs = {
@@ -2391,9 +2432,9 @@ try {{
             self.log("Navegador listo.", "SUCCESS")
             self.driver.get("https://oficinavirtual.ri.gob.do/PH")
             self._install_browser_close_warning(enabled=False)
-            
+
             self.log(">>> ESPERANDO: Inicie sesiÃ³n y navegue a la tabla.", "WARN")
-            self.btn_start.configure(state="normal")
+            self._enable_start_btn_with_hint()
             self._refresh_stats_labels("Navegador listo")
             self._update_retry_button_state()
             
@@ -2419,6 +2460,7 @@ try {{
         self._start_scraping_mode(target_rows=retry_rows, retry_mode=True)
 
     def _start_scraping_mode(self, target_rows=None, retry_mode=False):
+        self._stop_start_btn_pulse()
         if not self.driver:
             messagebox.showwarning("Error", "Primero presione el BotÃ³n 1.")
             return
