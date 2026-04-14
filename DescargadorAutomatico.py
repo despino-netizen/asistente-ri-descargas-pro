@@ -1284,15 +1284,7 @@ class GobiernoPDFDownloader(ctk.CTk):
         ]
 
         if self._is_running_from_installed_location():
-            portable_asset = find_exact_name_match(portable_preferred_names)
-            if portable_asset:
-                return portable_asset
-
-            for asset in normalized_assets:
-                asset_name = str(asset.get("name", "") or "").strip()
-                if self._is_portable_zip_asset_name(asset_name) and asset.get("browser_download_url"):
-                    return asset
-
+            # Prefer installer for installed copies — more reliable than zip swap
             installer_asset = find_exact_name_match(installer_preferred_names)
             if installer_asset:
                 return installer_asset
@@ -1300,6 +1292,15 @@ class GobiernoPDFDownloader(ctk.CTk):
             for asset in normalized_assets:
                 asset_name = str(asset.get("name", "") or "").strip()
                 if self._is_installer_asset_name(asset_name) and asset.get("browser_download_url"):
+                    return asset
+
+            portable_asset = find_exact_name_match(portable_preferred_names)
+            if portable_asset:
+                return portable_asset
+
+            for asset in normalized_assets:
+                asset_name = str(asset.get("name", "") or "").strip()
+                if self._is_portable_zip_asset_name(asset_name) and asset.get("browser_download_url"):
                     return asset
 
         direct_asset = find_exact_name_match(direct_preferred_names)
