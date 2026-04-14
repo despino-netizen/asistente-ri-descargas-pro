@@ -1,5 +1,5 @@
 #define MyAppName "Asistente RI Descargas Pro"
-#define MyAppVersion "3.4.2"
+#define MyAppVersion "3.4.3"
 #define MyAppPublisher "Dariel Espino"
 #define MyAppExeName "AsistenteRIDescargasPro.exe"
 #define MyAppFolder "AsistenteRIDescargasPro"
