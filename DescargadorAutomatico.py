@@ -59,7 +59,7 @@ CONFIG_FILE = os.path.join(APP_DATA_DIR, "config_descargas.json")
 LOG_FILE = os.path.join(APP_DATA_DIR, "historial_actividad.txt")
 DEFAULT_DOWNLOAD_DIR = _get_default_download_dir()
 APP_NAME = "Asistente RI Descargas Pro"
-APP_VERSION = "3.4.1"
+APP_VERSION = "3.4.2"
 APP_VERSION_LABEL = f"V{APP_VERSION}"
 DEFAULT_EXE_NAME = "AsistenteRIDescargasPro.exe"
 DEFAULT_PORTABLE_DIR_NAME = "AsistenteRIDescargasPro"
@@ -896,6 +896,77 @@ class GobiernoPDFDownloader(ctk.CTk):
         dialog_done.wait()
         return bool(response["value"])
 
+    def _ask_update_action_threadsafe(self, title, message, releases_url):
+        """Returns 'update', 'manual', or 'skip'."""
+        response = {"value": "skip"}
+        dialog_done = threading.Event()
+
+        def _ask():
+            try:
+                dialog = ctk.CTkToplevel(self)
+                dialog.title(title)
+                dialog.resizable(False, False)
+                dialog.grab_set()
+                dialog.lift()
+                dialog.focus_force()
+                dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+
+                ctk.CTkLabel(
+                    dialog,
+                    text=message,
+                    wraplength=360,
+                    justify="left",
+                    font=ctk.CTkFont(size=13),
+                ).pack(padx=24, pady=(20, 16))
+
+                btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+                btn_frame.pack(padx=24, pady=(0, 20), fill="x")
+
+                def _choose(val):
+                    response["value"] = val
+                    dialog.grab_release()
+                    dialog.destroy()
+                    dialog_done.set()
+
+                ctk.CTkButton(
+                    btn_frame,
+                    text="Actualizar ahora",
+                    fg_color="#2563EB",
+                    hover_color="#1D4ED8",
+                    command=lambda: _choose("update"),
+                    height=36,
+                ).pack(fill="x", pady=(0, 6))
+
+                ctk.CTkButton(
+                    btn_frame,
+                    text="Descargar manualmente",
+                    fg_color="transparent",
+                    border_width=1,
+                    text_color=("gray20", "gray80"),
+                    command=lambda: _choose("manual"),
+                    height=36,
+                ).pack(fill="x", pady=(0, 6))
+
+                ctk.CTkButton(
+                    btn_frame,
+                    text="Posponer",
+                    fg_color="transparent",
+                    text_color=("gray40", "gray60"),
+                    hover_color=("gray85", "gray25"),
+                    command=lambda: _choose("skip"),
+                    height=34,
+                ).pack(fill="x")
+
+                self.wait_window(dialog)
+                if not dialog_done.is_set():
+                    dialog_done.set()
+            except Exception:
+                dialog_done.set()
+
+        self.after(0, _ask)
+        dialog_done.wait()
+        return response["value"]
+
     def _set_update_button_state(self, checking):
         def _apply():
             try:
@@ -1368,19 +1439,25 @@ class GobiernoPDFDownloader(ctk.CTk):
 
             self.update_prompted_version = latest_version
             asset_name = str(asset.get("name") or self._expected_update_asset_name()).strip()
+            releases_url = f"https://github.com/{self._configured_github_repo()}/releases/latest"
             self._close_update_feedback()
-            should_update = self._ask_yes_no_threadsafe(
+            action = self._ask_update_action_threadsafe(
                 "Actualización disponible",
-                "Hay una nueva versión disponible.\n\n"
+                f"Hay una nueva versión disponible.\n\n"
                 f"Actual: V{current_version}\n"
-                f"Disponible: V{latest_version}\n"
-                f"Archivo: {asset_name}\n\n"
-                "La aplicación se cerrará para instalar la actualización.\n"
-                "¿Desea actualizar ahora?",
+                f"Disponible: V{latest_version}\n\n"
+                f"La aplicación se cerrará para instalar la actualización.",
+                releases_url,
             )
-            if not should_update:
+            if action == "skip":
                 self._close_update_feedback()
                 self.log(f"Actualización pospuesta por el usuario: V{latest_version}", "INFO")
+                return
+            if action == "manual":
+                self._close_update_feedback()
+                self.log(f"Usuario eligió descarga manual: V{latest_version}", "INFO")
+                import webbrowser
+                webbrowser.open(releases_url)
                 return
 
             self._download_and_apply_update(release_info, asset)
@@ -3334,7 +3411,7 @@ try {{
         sidebar_buttons = [
             ("Abrir carpeta", self._open_download_folder),
             ("Ver historial", self._show_history_view),
-            ("Actualizaciones", lambda: self._check_for_updates(manual=True)),
+            ("Actualizaciones", lambda: self.start_update_check_thread(manual=True)),
         ]
         for idx, (label, cmd) in enumerate(sidebar_buttons):
             ctk.CTkButton(
