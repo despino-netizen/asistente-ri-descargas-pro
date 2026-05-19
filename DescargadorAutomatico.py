@@ -59,7 +59,7 @@ CONFIG_FILE = os.path.join(APP_DATA_DIR, "config_descargas.json")
 LOG_FILE = os.path.join(APP_DATA_DIR, "historial_actividad.txt")
 DEFAULT_DOWNLOAD_DIR = _get_default_download_dir()
 APP_NAME = "Asistente RI Descargas Pro"
-APP_VERSION = "3.4.7"
+APP_VERSION = "3.4.8"
 APP_VERSION_LABEL = f"V{APP_VERSION}"
 DEFAULT_EXE_NAME = "AsistenteRIDescargasPro.exe"
 DEFAULT_PORTABLE_DIR_NAME = "AsistenteRIDescargasPro"
@@ -1670,15 +1670,20 @@ try {{
     }}
     Write-UpdateLog "Contenido extraído en: $expandedDir"
 
-    # Usar robocopy para copiar archivos nuevos encima (no requiere mover carpeta)
+    # Copiar archivos nuevos encima (no requiere mover carpeta).
+    # Importante: NO usar `Start-Process -ArgumentList` con paths con espacios,
+    # porque PowerShell une los argumentos sin citarlos y robocopy los parte.
+    # El operador `&` sí cita correctamente cada argumento, asi que funciona
+    # incluso cuando el perfil del usuario tiene espacios (ej. "Centro de Copiado").
     Write-UpdateLog "Copiando archivos nuevos a: $targetDir"
-    $roboArgs = @($expandedDir, $targetDir, '/E', '/IS', '/IT', '/NFL', '/NDL', '/NJH', '/NJS', '/R:5', '/W:2')
-    $roboResult = Start-Process -FilePath 'robocopy' -ArgumentList $roboArgs -NoNewWindow -Wait -PassThru
-    # robocopy exit codes 0-7 are success
-    if ($roboResult.ExitCode -gt 7) {{
-        throw "robocopy falló con código $($roboResult.ExitCode)"
+    $roboOutput = & robocopy $expandedDir $targetDir /E /IS /IT /NFL /NDL /NJH /NJS /R:5 /W:2 2>&1
+    $roboExit = $LASTEXITCODE
+    # robocopy exit codes 0-7 son éxito (8+ es error real)
+    if ($roboExit -gt 7) {{
+        Write-UpdateLog ("Salida de robocopy:`n" + ($roboOutput | Out-String))
+        throw "robocopy falló con código $roboExit"
     }}
-    Write-UpdateLog "Archivos copiados correctamente (robocopy code: $($roboResult.ExitCode))."
+    Write-UpdateLog "Archivos copiados correctamente (robocopy code: $roboExit)."
 
     if (Test-Path -LiteralPath $appExe) {{
         Write-UpdateLog "Lanzando nueva aplicación: $appExe"
