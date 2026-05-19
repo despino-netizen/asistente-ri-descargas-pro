@@ -59,7 +59,7 @@ CONFIG_FILE = os.path.join(APP_DATA_DIR, "config_descargas.json")
 LOG_FILE = os.path.join(APP_DATA_DIR, "historial_actividad.txt")
 DEFAULT_DOWNLOAD_DIR = _get_default_download_dir()
 APP_NAME = "Asistente RI Descargas Pro"
-APP_VERSION = "3.4.6"
+APP_VERSION = "3.4.7"
 APP_VERSION_LABEL = f"V{APP_VERSION}"
 DEFAULT_EXE_NAME = "AsistenteRIDescargasPro.exe"
 DEFAULT_PORTABLE_DIR_NAME = "AsistenteRIDescargasPro"
@@ -2513,6 +2513,36 @@ try {{
         except:
             return False
 
+    def _rename_to_unique(self, active_dir, source_name, expected_name):
+        """Renombra un archivo recien descargado al nombre unico esperado.
+
+        Si el destino ya existe (no deberia, porque el UUID es unico, pero
+        somos defensivos), se anaden sufijos _1, _2, etc. para evitar
+        sobrescribir descargas previas.
+        """
+        src_path = os.path.join(active_dir, source_name)
+        if not expected_name:
+            return source_name
+        if os.path.normcase(source_name) == os.path.normcase(expected_name):
+            return source_name
+
+        base, ext = os.path.splitext(expected_name)
+        target_name = expected_name
+        target_path = os.path.join(active_dir, target_name)
+        counter = 1
+        while os.path.exists(target_path) and os.path.normcase(target_path) != os.path.normcase(src_path):
+            target_name = f"{base}_{counter}{ext}"
+            target_path = os.path.join(active_dir, target_name)
+            counter += 1
+
+        try:
+            os.replace(src_path, target_path)
+            self.log(f"Archivo renombrado: '{source_name}' -> '{target_name}'", "INFO")
+            return target_name
+        except Exception as e:
+            self.log(f"No se pudo renombrar '{source_name}' a '{target_name}': {e}", "WARN")
+            return source_name
+
     def _wait_for_download(self, initial_files, timeout=45, expected_name=None):
         ignored_files = set()
         expected_base = None
@@ -2534,13 +2564,19 @@ try {{
                 if new_files:
                     valid_files = [f for f in new_files if not f.endswith(".crdownload") and not f.endswith(".tmp")]
 
+                    # Preferir archivos que coinciden con el nombre esperado, pero
+                    # NO descartar los demas: si el visor nativo guardo el PDF con
+                    # el nombre del servidor lo renombraremos al nombre unico mas
+                    # abajo. De lo contrario, descargas distintas con el mismo
+                    # nombre de servidor terminan sobrescribiendose.
                     if expected_base:
-                        filtered_files = []
-                        for file_name in valid_files:
-                            base = os.path.splitext(file_name)[0].lower()
-                            if base == expected_base or base.startswith(f"{expected_base} ("):
-                                filtered_files.append(file_name)
-                        valid_files = filtered_files
+                        matched_files = [
+                            f for f in valid_files
+                            if os.path.splitext(f)[0].lower() == expected_base
+                            or os.path.splitext(f)[0].lower().startswith(f"{expected_base} (")
+                        ]
+                        if matched_files:
+                            valid_files = matched_files
 
                     if valid_files:
                         valid_files.sort(
@@ -2566,6 +2602,10 @@ try {{
                                 continue
 
                             if self._is_valid_pdf_file(file_path):
+                                # Garantizar nombre unico en disco para que cada
+                                # PDF sobreviva (evita que el siguiente lo suplante).
+                                if expected_name:
+                                    return self._rename_to_unique(active_dir, file_name, expected_name)
                                 return file_name
 
                             self.log(f"Descarga invalida detectada y descartada: {file_name}", "WARN")
